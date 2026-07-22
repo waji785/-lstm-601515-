@@ -32,3 +32,4 @@ stock_final.py        # 主程序
 model.pth             # 训练好的模型权重
 scaler_X.pkl          # 特征标准化器
 backtest_result.png   # 资金曲线图
+![资金曲线图](/backtest_result.png)
