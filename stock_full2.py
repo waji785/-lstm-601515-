@@ -265,6 +265,61 @@ def run_backtest(stock_code, model, scaler_X, scaler_y, initial_capital=100000):
 # 主程序
 # =============================================
 if __name__ == "__main__":
+    # ========== 交互模块 ==========
+    print("\n" + "="*50)
+    print("📈 欢迎使用 A股量化回测系统")
+    print("="*50)
+    
+    while True:
+        user_input = input("\n请输入股票代码（如 601515 或 sh.601515）：").strip()
+        if not user_input:
+            print("❌ 输入不能为空，请重新输入。")
+            continue
+        code = user_input.replace('sh.', '').replace('sz.', '').replace('.', '').strip()
+        if code.isdigit():
+            STOCK_CODE = code
+            print(f"✅ 已识别股票代码：{STOCK_CODE}")
+            break
+        else:
+            print("❌ 输入格式有误，请重新输入（仅支持数字或 'sh.' 前缀）。")
+    
+    confirm = input(f"\n是否开始回测 {STOCK_CODE}？(y/n) ").strip().lower()
+    if confirm != 'y':
+        print("❌ 已取消操作。")
+        exit()
+    
+    print(f"\n🚀 开始处理股票 {STOCK_CODE} ...")
+    # ================================
+
+    # 清理旧文件
+    for f in ['model.pth', 'scaler_X.pkl', 'scaler_y.pkl']:
+        if os.path.exists(f):
+            os.remove(f)
+            print(f"🗑️ 已删除旧文件: {f}")
+
+    print("🚀 开始全新训练...")
+    model, scaler_X, scaler_y = train_and_save_model(STOCK_CODE)
+
+    if model is not None:
+        print("\n✅ 训练完成，开始回测...")
+        backtest_df = run_backtest(STOCK_CODE, model, scaler_X, scaler_y)
+        if backtest_df is not None:
+            total_return = (backtest_df['Capital'].iloc[-1] - backtest_df['Capital'].iloc[0]) / backtest_df['Capital'].iloc[0]
+            print(f"\n📊 总收益率: {total_return*100:.2f}%")
+            
+            plt.figure(figsize=(10, 5))
+            plt.plot(backtest_df['Date'], backtest_df['Capital'])
+            plt.title(f'资金曲线 ({STOCK_CODE})')
+            plt.xlabel('日期')
+            plt.ylabel('资金 (元)')
+            plt.grid(True)
+            plt.savefig('backtest_result.png')
+            print("📊 资金曲线图已保存为 backtest_result.png")
+            plt.show()
+        else:
+            print("❌ 回测失败，请检查回测函数。")
+    else:
+        print("❌ 训练失败，请检查网络或股票代码。")
     STOCK_CODE = "601515"
 
     for f in ['model.pth', 'scaler_X.pkl', 'scaler_y.pkl']:
