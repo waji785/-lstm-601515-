@@ -78,7 +78,7 @@
 
 PyTorch 2.x — 深度学习框架
 
-akshare — A股数据获取
+akshare/baostock — A股数据获取
 
 Pandas / NumPy — 数据处理与计算
 
@@ -117,6 +117,8 @@ ThreadPoolExecutor — 并行加速
 ├── whitelist.csv               # 策略白名单（自动生成）
 
 ├── batch\_results.csv           # 批量回测结果（自动生成）
+
+├── available\_proxies.txt           # 代理文件
 
 └── README.md                   # 项目说明文档
 
@@ -177,6 +179,4 @@ python analyze\_results.py
 
 
 **⚠️ 免责声明：本项目仅供量化研究与学习使用，不构成任何投资建议。实盘交易需谨慎，风险自负。**
-
-
 
