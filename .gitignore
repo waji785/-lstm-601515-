@@ -178,3 +178,9 @@ model.pth
 batch_results.csv
 backtest_result.png
 available_proxies.txt
+available_proxies.txt
+backtest_result.png
+batch_results.csv
+model.pth
+scaler_X.pkl
+scaler_y.pkl
