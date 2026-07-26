@@ -162,3 +162,19 @@ available_proxies.txt
 
 # Analysis output - 分析结果目录
 analysis_output/
+model.pth
+scaler_y.pkl
+*.pkl
+*.py
+available_proxies.txt
+available_proxies_20260726_093242.txt
+available_proxies.txt
+available_proxies.txt
+backtest_result.png
+fast_proxies.txt
+model.pth
+medium_proxies.txt
+model.pth
+batch_results.csv
+backtest_result.png
+available_proxies.txt
