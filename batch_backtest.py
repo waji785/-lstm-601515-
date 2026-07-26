@@ -1,195 +1,110 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-并行批量回测系统（增量缓存版 + 限流器）
-功能：
-1. 数据缓存：首次下载后存本地，避免重复下载
-2. 增量更新：每次只下载缺失的新数据
-3. 并行加速：多线程同时处理多只股票
-4. 限流器：控制请求频率，避免触发数据源反爬
-用法: python batch_backtest_optimized.py
-"""
-
 import os
 import time
+import random
 import pandas as pd
 import numpy as np
 import akshare as ak
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import wraps
 import warnings
 warnings.filterwarnings('ignore')
 
-# 导入你的核心回测模块（请确保 stock_full2.py 在同一目录）
-from stock_full2 import train_and_save_model, run_backtest
+# ----- 直接从主程序导入核心函数和配置 -----
+from stock_full2 import (
+    FEATURE_COLS,
+    construct_features,
+    fetch_data_with_fallback,
+    train_and_save_model,
+    run_backtest,
+    fetch_benchmark_data,
+    DualLSTM
+)
 
 # =============================================
-# 配置区（你可以自由调整）
+# 配置
 # =============================================
-# 数据缓存目录
-CACHE_DIR = "stock_data_cache"
-
-# 并行线程数（建议 4~8，太多可能触发数据源限流）
-MAX_WORKERS = 6
-
-# 限流器：每秒最多请求次数（配合 MAX_WORKERS 一起调）
-RATE_LIMIT_CALLS = 8   # 每秒最多 8 次请求
-
-# 全量测试时限制股票数量（设为 None 则测试全部）
-MAX_STOCKS_FULL = 100   # 建议先 100 测试，确认可行再改 None
-
-# 白名单文件
+MAX_WORKERS = 2
+MAX_STOCKS_FULL = None
 WHITELIST_FILE = "whitelist.csv"
-
-# 白名单筛选条件（可调）
+# 最低总收益率阈值：只有总收益率超过 30% 的股票才会进入白名单
+# 含义：策略在该股票上的累计收益必须超过此比例，才认为值得关注
+# 取值范围：0.0 ~ 1.0（对应 0% ~ 100%）
+# 建议值：0.20 ~ 0.50（根据市场行情调整，牛市可提高，熊市可降低）
 WHITELIST_MIN_RETURN = 0.30
+
+# 最少交易次数：至少交易 3 次才会被纳入白名单
+# 含义：交易次数太少（比如 1-2 次）可能是运气成分，缺乏统计显著性
+# 取值范围：正整数（一般建议 3 ~ 10）
+# 建议值：3（最低要求）或 5（更严格）
 WHITELIST_MIN_TRADES = 3
+
+# 最大可接受回撤：最大回撤不超过 50% 才能进入白名单
+# 含义：即使收益很高，如果回撤过大（比如超过 50%），风险太高，不适合稳健策略
+# 取值范围：0.0 ~ 1.0（对应 0% ~ 100%）
+# 建议值：0.30 ~ 0.50（30%~50% 回撤容忍度，可根据风险偏好调整）
 WHITELIST_MAX_DRAWDOWN = 0.50
 
-# 训练轮数（可调，默认 20 轮已足够）
-EPOCHS = 20
-
-# 数据起止日期
-START_DATE = "2020-01-01"
-END_DATE = "2026-07-20"
+# 重试配置
+MAX_RETRIES_PER_STOCK = 3
+RETRY_DELAY = 5
 
 # =============================================
-# 1. 限流器装饰器
+# 全局变量：记录失败股票
 # =============================================
-def rate_limit(max_calls=10, period=1):
-    """
-    限流器：控制函数在指定时间段内的最大调用次数
-    max_calls: 在 period 秒内最多调用次数
-    period: 时间窗口（秒）
-    """
-    def decorator(func):
-        last_called = [0.0]  # 用列表存储以便在闭包中修改
-        call_count = [0]     # 当前周期内的调用计数
-        window_start = [0.0] # 当前窗口开始时间
-        
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            current_time = time.time()
-            # 如果窗口已过期，重置计数
-            if current_time - window_start[0] > period:
-                call_count[0] = 0
-                window_start[0] = current_time
-            
-            # 如果已达到最大调用次数，等待到下一个窗口
-            if call_count[0] >= max_calls:
-                wait_time = window_start[0] + period - current_time
-                if wait_time > 0:
-                    time.sleep(wait_time)
-                # 重置计数器
-                call_count[0] = 0
-                window_start[0] = time.time()
-            
-            # 调用原函数
-            ret = func(*args, **kwargs)
-            call_count[0] += 1
-            return ret
-        return wrapper
-    return decorator
+FAILED_STOCKS = []
 
 # =============================================
-# 2. 数据缓存（增量更新 + 限流）
+# 获取股票列表
 # =============================================
-@rate_limit(max_calls=RATE_LIMIT_CALLS, period=1)
-def get_stock_data_cache(stock_code):
-    """
-    增量更新缓存：只下载本地缺失的新数据
-    自动应用限流器，避免请求过快
-    """
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    cache_file = os.path.join(CACHE_DIR, f"{stock_code}.csv")
-    
-    # 如果缓存文件存在，读取它并获取最新日期
-    if os.path.exists(cache_file):
-        df_existing = pd.read_csv(cache_file, parse_dates=['Date'])
-        if not df_existing.empty:
-            last_date = df_existing['Date'].max()
-            if last_date >= pd.to_datetime(END_DATE):
-                # 缓存已是最新
-                return df_existing
-            else:
-                new_start = (last_date + pd.Timedelta(days=1)).strftime("%Y%m%d")
-        else:
-            new_start = START_DATE.replace("-", "")
-            df_existing = pd.DataFrame(columns=['Date', 'Close', 'Volume'])
-    else:
-        new_start = START_DATE.replace("-", "")
-        df_existing = pd.DataFrame(columns=['Date', 'Close', 'Volume'])
-    
-    # 下载新数据（从 new_start 到 END_DATE）
-    try:
-        code = stock_code.replace('.', '')
-        df_new = ak.stock_zh_a_hist(
-            symbol=code,
-            period="daily",
-            start_date=new_start,
-            end_date=END_DATE.replace("-", ""),
-            adjust="qfq"
-        )
-        if df_new is not None and not df_new.empty:
-            df_new.rename(columns={'日期': 'Date', '收盘': 'Close', '成交量': 'Volume'}, inplace=True)
-            df_new = df_new[['Date', 'Close', 'Volume']].copy()
-            df_new['Date'] = pd.to_datetime(df_new['Date'])
-            df_new = df_new.astype({'Close': float, 'Volume': float})
-            
-            df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-            df_combined = df_combined.drop_duplicates(subset=['Date']).sort_values('Date').reset_index(drop=True)
-            df_combined.to_csv(cache_file, index=False)
-            return df_combined
-        else:
-            return df_existing if not df_existing.empty else None
-    except Exception as e:
-        # 静默处理错误，避免中断主流程
-        return df_existing if not df_existing.empty else None
-
-# =============================================
-# 3. 获取股票列表（带重试）
-# =============================================
-def get_stock_list_with_retry(retries=3, delay=2):
-    """
-    获取 A 股列表，失败时自动重试
-    """
+def get_stock_list(retries=3):
     for attempt in range(retries):
         try:
             print(f"📊 获取 A 股列表... (尝试 {attempt+1}/{retries})")
             df = ak.stock_info_a_code_name()
             if df is not None and not df.empty:
-                print(f"✅ 获取到 {len(df)} 只")
+                print(f"✅ 获取到 {len(df)} 只股票")
                 return df
         except Exception as e:
             print(f"⚠️ 第 {attempt+1} 次尝试失败: {e}")
             if attempt < retries - 1:
-                time.sleep(delay * (attempt + 1))  # 指数退避
-            continue
-        
-        # 备选接口
-        try:
-            print("📊 尝试备选接口...")
-            df = ak.stock_zh_a_spot_em()
-            df = df[['代码', '名称']].copy()
-            df.columns = ['code', 'name']
-            print(f"✅ 获取到 {len(df)} 只（备选）")
-            return df
-        except Exception as e2:
-            print(f"⚠️ 备选接口也失败: {e2}")
-            if attempt < retries - 1:
-                time.sleep(delay * (attempt + 1))
-    
-    print("❌ 所有获取股票列表的尝试均失败")
-    return None
+                time.sleep(2 * (attempt + 1))
+    try:
+        print("📊 尝试备选接口...")
+        df = ak.stock_zh_a_spot_em()
+        df = df[['代码', '名称']].copy()
+        df.columns = ['code', 'name']
+        print(f"✅ 获取到 {len(df)} 只股票（备选）")
+        return df
+    except Exception as e:
+        print(f"❌ 所有获取股票列表的方式均失败: {e}")
+        return None
 
 # =============================================
-# 4. 单只股票回测包装器（供并行调用）
+# 单只股票回测包装器（带重试计数）
 # =============================================
-def backtest_single_stock_wrapper(stock_code, stock_name=""):
+def backtest_single_stock_wrapper(stock_code, stock_name="", benchmark_df=None, retry_count=0):
     """
-    包装训练和回测，返回结果字典
+    对单只股票执行回测，失败时自动递归重试
+    retry_count: 当前已重试次数
     """
+    global FAILED_STOCKS
+    
+    # ----- 检查是否已达到最大重试次数 -----
+    if retry_count >= MAX_RETRIES_PER_STOCK:
+        result = {
+            "code": stock_code,
+            "name": stock_name,
+            "status": "放弃",
+            "total_return": np.nan,
+            "trade_count": np.nan,
+            "max_drawdown": np.nan,
+            "sharpe_ratio": np.nan,
+            "win_rate": np.nan,
+            "error_msg": f"重试 {MAX_RETRIES_PER_STOCK} 次后失败"
+        }
+        FAILED_STOCKS.append((stock_code, stock_name, f"放弃: 重试{MAX_RETRIES_PER_STOCK}次失败"))
+        return result
+    
     result = {
         "code": stock_code,
         "name": stock_name,
@@ -203,87 +118,213 @@ def backtest_single_stock_wrapper(stock_code, stock_name=""):
     }
     
     try:
-        # 获取数据（自动利用缓存和限流）
-        df = get_stock_data_cache(stock_code)
+        # ----- 1. 获取数据 -----
+        df = fetch_data_with_fallback(stock_code)
         if df is None or len(df) < 21:
             result["status"] = "数据不足"
+            FAILED_STOCKS.append((stock_code, stock_name, "数据不足"))
+            if retry_count < MAX_RETRIES_PER_STOCK:
+                print(f"  🔄 {stock_code} 数据不足，第 {retry_count+1} 次重试...")
+                time.sleep(RETRY_DELAY)
+                return backtest_single_stock_wrapper(stock_code, stock_name, benchmark_df, retry_count + 1)
             return result
         
-        # 训练模型
-        model, scaler_X, scaler_y = train_and_save_model(stock_code)
+        # ----- 2. 训练模型 -----
+        model, scaler_X, scaler_y, _ = train_and_save_model(stock_code)
         if model is None:
             result["status"] = "训练失败"
+            FAILED_STOCKS.append((stock_code, stock_name, "训练失败"))
+            if retry_count < MAX_RETRIES_PER_STOCK:
+                print(f"  🔄 {stock_code} 训练失败，第 {retry_count+1} 次重试...")
+                time.sleep(RETRY_DELAY)
+                return backtest_single_stock_wrapper(stock_code, stock_name, benchmark_df, retry_count + 1)
             return result
         
-        # 回测
-        backtest_df = run_backtest(stock_code, model, scaler_X, scaler_y)
+        # ----- 3. 回测（传入 benchmark_df） -----
+        backtest_df = run_backtest(stock_code, model, scaler_X, scaler_y, df, benchmark_df=benchmark_df)
         if backtest_df is None:
             result["status"] = "回测失败"
+            FAILED_STOCKS.append((stock_code, stock_name, "回测失败"))
+            if retry_count < MAX_RETRIES_PER_STOCK:
+                print(f"  🔄 {stock_code} 回测失败，第 {retry_count+1} 次重试...")
+                time.sleep(RETRY_DELAY)
+                return backtest_single_stock_wrapper(stock_code, stock_name, benchmark_df, retry_count + 1)
             return result
         
-        # 提取指标
+        # ----- 4. 提取指标（成功） -----
         df_b = backtest_df
         result["total_return"] = (df_b['Capital'].iloc[-1] - df_b['Capital'].iloc[0]) / df_b['Capital'].iloc[0]
         result["trade_count"] = df_b['Position'].diff().abs().sum() / 2
         
-        capital_peak = df_b['Capital'].cummax()
-        drawdown = (capital_peak - df_b['Capital']) / capital_peak
+        peak = df_b['Capital'].cummax()
+        drawdown = (peak - df_b['Capital']) / peak
         result["max_drawdown"] = drawdown.max()
         
-        daily_returns = df_b['Strategy_Return'].dropna()
-        if len(daily_returns) > 1 and daily_returns.std() != 0:
-            result["sharpe_ratio"] = np.sqrt(252) * daily_returns.mean() / daily_returns.std()
+        daily_ret = df_b['Capital'].pct_change().fillna(0)
+        risk_free = 0.025
+        excess = daily_ret - risk_free / 252
+        std = excess.std()
+        
+        if std > 1e-8:
+            result["sharpe_ratio"] = np.sqrt(252) * excess.mean() / std
         else:
             result["sharpe_ratio"] = 0
         
-        winning = (df_b['Strategy_Return'] > 0).sum()
-        total = (df_b['Strategy_Return'] != 0).sum()
-        result["win_rate"] = winning / total if total > 0 else 0
+        if 'Strategy_Return' in df_b.columns:
+            winning = (df_b['Strategy_Return'] > 0).sum()
+            total = (df_b['Strategy_Return'] != 0).sum()
+            result["win_rate"] = winning / total if total > 0 else 0
+        else:
+            result["win_rate"] = 0
+        
+        # 成功时从失败列表中移除（如果有）
+        FAILED_STOCKS = [f for f in FAILED_STOCKS if f[0] != stock_code]
         
     except Exception as e:
         result["status"] = "异常"
         result["error_msg"] = str(e)
+        FAILED_STOCKS.append((stock_code, stock_name, f"异常: {str(e)[:50]}"))
+        if retry_count < MAX_RETRIES_PER_STOCK:
+            print(f"  🔄 {stock_code} 异常 ({str(e)[:30]})，第 {retry_count+1} 次重试...")
+            time.sleep(RETRY_DELAY)
+            return backtest_single_stock_wrapper(stock_code, stock_name, benchmark_df, retry_count + 1)
     
     return result
 
 # =============================================
-# 5. 主函数
+# 重试失败股票（集中重试）
+# =============================================
+def retry_failed_stocks(benchmark_df):
+    """对失败股票进行集中重试，最多重试 MAX_RETRIES_PER_STOCK 轮"""
+    global FAILED_STOCKS
+    
+    if not FAILED_STOCKS:
+        print("\n✅ 没有失败股票需要重试")
+        return []
+    
+    print(f"\n🔁 开始集中重试失败股票（最多 {MAX_RETRIES_PER_STOCK} 轮）...")
+    
+    retry_results = []
+    for attempt in range(MAX_RETRIES_PER_STOCK):
+        if not FAILED_STOCKS:
+            break
+        
+        print(f"\n📌 第 {attempt+1} 轮集中重试，剩余 {len(FAILED_STOCKS)} 只股票")
+        
+        current_round = FAILED_STOCKS.copy()
+        FAILED_STOCKS = []  # 清空，本轮成功的不会进入下一轮
+        
+        for code, name, reason in tqdm(current_round, desc=f"重试第 {attempt+1} 轮"):
+            print(f"  🔄 重试 {code} {name} (原原因: {reason})")
+            time.sleep(RETRY_DELAY)
+            
+            # 传入当前重试轮次作为重试计数
+            result = backtest_single_stock_wrapper(code, name, benchmark_df, retry_count=attempt)
+            if result["status"] == "成功":
+                retry_results.append(result)
+                print(f"  ✅ {code} 重试成功！收益: {result['total_return']*100:.2f}%")
+            # 如果重试后仍然失败，会留在 FAILED_STOCKS 中（由 wrapper 添加）
+        
+        if not FAILED_STOCKS:
+            print(f"\n✅ 第 {attempt+1} 轮重试完成，所有股票已成功")
+            break
+        
+        if attempt < MAX_RETRIES_PER_STOCK - 1:
+            print(f"\n⏳ 等待 10 秒后进行下一轮重试...")
+            time.sleep(10)
+    
+    # 最终统计：标记那些仍然失败的股票为"放弃"
+    if FAILED_STOCKS:
+        print(f"\n⚠️ 仍有 {len(FAILED_STOCKS)} 只股票在 {MAX_RETRIES_PER_STOCK} 轮重试后失败，已放弃")
+        for code, name, reason in FAILED_STOCKS[:10]:
+            print(f"  ❌ {code} {name}: {reason}")
+        if len(FAILED_STOCKS) > 10:
+            print(f"  ... 共 {len(FAILED_STOCKS)} 只")
+    
+    return retry_results
+
+# =============================================
+# 生成白名单
+# =============================================
+def generate_whitelist(result_df):
+    success_df = result_df[result_df["status"] == "成功"].copy()
+    if len(success_df) == 0:
+        print("⚠️ 没有成功的回测结果，无法生成白名单。")
+        return None
+    
+    whitelist = success_df[
+        (success_df["total_return"] > WHITELIST_MIN_RETURN) &
+        (success_df["trade_count"] >= WHITELIST_MIN_TRADES) &
+        (success_df["max_drawdown"] < WHITELIST_MAX_DRAWDOWN)
+    ].sort_values("total_return", ascending=False)
+    
+    if len(whitelist) == 0:
+        print(f"⚠️ 没有股票满足白名单条件")
+        return None
+    
+    whitelist[["code", "name", "total_return", "trade_count", "max_drawdown", "sharpe_ratio"]].to_csv(
+        WHITELIST_FILE, index=False, encoding='utf-8-sig'
+    )
+    print(f"\n🌟 白名单已生成，共 {len(whitelist)} 只股票")
+    print("📋 白名单前10名：")
+    print(whitelist[["code", "name", "total_return", "trade_count", "max_drawdown"]].head(10).to_string(
+        index=False, float_format="%.3f"
+    ))
+    return whitelist
+
+# =============================================
+# 主函数
 # =============================================
 def main():
+    global FAILED_STOCKS
+    
     print("="*60)
-    print("🚀 并行批量回测系统 (增量缓存版 + 限流器)")
+    print("🚀 批量回测系统 (带3次重试失败放弃)")
     print("="*60)
-    print(f"📌 配置: 线程数={MAX_WORKERS}, 限流={RATE_LIMIT_CALLS}次/秒, 训练轮数={EPOCHS}")
+    print(f"📌 配置: 线程数={MAX_WORKERS}, 测试上限={MAX_STOCKS_FULL or '全量'}")
+    print(f"📌 重试配置: 每只股票最多重试 {MAX_RETRIES_PER_STOCK} 次, 间隔 {RETRY_DELAY} 秒")
+    
+    # ========== 第一步：统一获取沪深300指数 ==========
+    print("\n📊 正在获取沪深300指数数据（所有股票共用）...")
+    benchmark_df = None
+    for attempt in range(3):
+        try:
+            benchmark_df = fetch_benchmark_data()
+            if benchmark_df is not None and not benchmark_df.empty:
+                print(f"✅ 沪深300指数数据获取成功，共 {len(benchmark_df)} 条记录")
+                break
+        except Exception as e:
+            print(f"⚠️ 沪深300指数获取失败 (尝试 {attempt+1}/3): {e}")
+            if attempt < 2:
+                time.sleep(3)
+    
+    if benchmark_df is None or benchmark_df.empty:
+        print("⚠️ 沪深300指数数据获取失败，将跳过所有对比")
+    # =============================================
     
     # 获取股票列表
-    stock_df = get_stock_list_with_retry()
+    stock_df = get_stock_list()
     if stock_df is None or len(stock_df) == 0:
-        # 尝试从本地白名单加载
         if os.path.exists(WHITELIST_FILE):
-            stock_df = pd.read_csv(WHILTELIST_FILE)
+            stock_df = pd.read_csv(WHITELIST_FILE)
             print(f"✅ 从本地白名单加载 {len(stock_df)} 只股票")
         else:
             print("❌ 无法获取股票列表，且没有本地白名单")
             return
     
-    # 限制数量
     if MAX_STOCKS_FULL and len(stock_df) > MAX_STOCKS_FULL:
         stock_df = stock_df.head(MAX_STOCKS_FULL)
-        print(f"📌 只测试前 {MAX_STOCKS_FULL} 只")
-    else:
-        print(f"📌 全量测试，共 {len(stock_df)} 只")
+        print(f"📌 仅测试前 {MAX_STOCKS_FULL} 只股票")
     
-    # 确认
     confirm = input(f"\n是否开始回测 {len(stock_df)} 只股票？(y/n) ").strip().lower()
     if confirm != 'y':
         print("❌ 已取消")
         return
     
-    # 准备任务列表
+    # 准备任务
     tasks = []
     for _, row in stock_df.iterrows():
         code = str(row['code']).replace('sh.', '').replace('sz.', '').strip()
-        # 补全为6位数字
         if len(code) < 6 and code.isdigit():
             code = code.zfill(6)
         name = row.get('name', '')
@@ -292,51 +333,70 @@ def main():
     results = []
     start_time = time.time()
     
-    # 并行执行
+    # ========== 第一轮：并行执行 ==========
+    print("\n🚀 开始第一轮回测...")
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_map = {}
         for t in tasks:
-            future = executor.submit(backtest_single_stock_wrapper, t['code'], t['name'])
+            future = executor.submit(backtest_single_stock_wrapper, t['code'], t['name'], benchmark_df, 0)
             future_map[future] = t
+            time.sleep(random.uniform(0.3, 0.8))
         
         for future in tqdm(as_completed(future_map), total=len(tasks), desc="回测进度"):
             res = future.result()
             results.append(res)
             if res["status"] == "成功":
                 print(f"  ✅ {res['code']} {res['name']}: 收益 {res['total_return']*100:.2f}%")
+            elif res["status"] == "放弃":
+                print(f"  ❌ {res['code']} {res['name']}: {res['error_msg']}")
             else:
                 print(f"  ⚠️ {res['code']} {res['name']}: {res['status']}")
     
     elapsed = time.time() - start_time
-    print(f"\n⏱️ 总耗时: {elapsed//60:.0f}分 {elapsed%60:.0f}秒")
+    print(f"\n⏱️ 第一轮耗时: {elapsed//60:.0f}分 {elapsed%60:.0f}秒")
+    
+    # ========== 第二轮：集中重试失败股票 ==========
+    retry_results = retry_failed_stocks(benchmark_df)
+    if retry_results:
+        results.extend(retry_results)
+        print(f"\n✅ 重试成功 {len(retry_results)} 只股票")
+    
+    # ========== 最终统计 ==========
+    print(f"\n📊 最终失败股票数: {len(FAILED_STOCKS)}")
+    if FAILED_STOCKS:
+        print("失败股票列表（前10）:")
+        for code, name, reason in FAILED_STOCKS[:10]:
+            print(f"  ❌ {code} {name}: {reason}")
+        if len(FAILED_STOCKS) > 10:
+            print(f"  ... 共 {len(FAILED_STOCKS)} 只")
     
     # 保存结果
     result_df = pd.DataFrame(results)
     result_df.to_csv("batch_results.csv", index=False, encoding='utf-8-sig')
-    print("✅ 结果已保存至 batch_results.csv")
+    print("✅ 详细结果已保存至 batch_results.csv")
     
-    # 筛选白名单
-    success_df = result_df[result_df["status"] == "成功"].copy()
+    # 统计摘要
+    success_df = result_df[result_df["status"] == "成功"]
+    print("\n" + "="*60)
+    print("📊 回测统计摘要")
+    print("="*60)
+    print(f"总测试股票数: {len(result_df)}")
+    print(f"成功回测: {len(success_df)}")
+    print(f"放弃: {len(result_df[result_df['status'] == '放弃'])}")
+    print(f"数据不足: {len(result_df[result_df['status'] == '数据不足'])}")
+    print(f"训练失败: {len(result_df[result_df['status'] == '训练失败'])}")
+    print(f"回测失败: {len(result_df[result_df['status'] == '回测失败'])}")
+    print(f"异常退出: {len(result_df[result_df['status'] == '异常'])}")
+    
     if len(success_df) > 0:
-        whitelist = success_df[
-            (success_df["total_return"] > WHITELIST_MIN_RETURN) &
-            (success_df["trade_count"] >= WHITELIST_MIN_TRADES) &
-            (success_df["max_drawdown"] < WHITELIST_MAX_DRAWDOWN)
-        ].sort_values("total_return", ascending=False)
-        
-        print(f"\n🌟 白名单股票数: {len(whitelist)}")
-        if len(whitelist) > 0:
-            whitelist[["code", "name", "total_return", "trade_count", "max_drawdown"]].to_csv(
-                WHITELIST_FILE, index=False, encoding='utf-8-sig'
-            )
-            print("📋 白名单前10:")
-            print(whitelist[["code", "name", "total_return", "trade_count"]].head(10).to_string(
-                index=False, float_format="%.3f"
-            ))
-        else:
-            print("⚠️ 没有股票满足白名单条件，可调整阈值")
-    else:
-        print("⚠️ 没有股票成功回测")
+        print(f"\n收益率统计:")
+        print(f"  平均值: {success_df['total_return'].mean()*100:.2f}%")
+        print(f"  中位数: {success_df['total_return'].median()*100:.2f}%")
+        print(f"  最大值: {success_df['total_return'].max()*100:.2f}%")
+        print(f"  最小值: {success_df['total_return'].min()*100:.2f}%")
+    
+    # 生成白名单
+    generate_whitelist(result_df)
     
     print("\n✅ 全部完成！")
 
