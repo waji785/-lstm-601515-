@@ -27,6 +27,12 @@ STOP_LOSS = -0.10
 TAKE_PROFIT = 0.30
 
 # =============================================
+# 数据缓存配置
+# =============================================
+CACHE_DIR = "stock_data_cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+# =============================================
 # 特征列表
 # =============================================
 FEATURE_COLS = [
@@ -140,9 +146,41 @@ def construct_features(df):
     return df.dropna()
 
 # =============================================
-# baostock 数据获取
+# 数据缓存函数
+# =============================================
+def get_cache_path(stock_code):
+    """获取缓存文件路径"""
+    return os.path.join(CACHE_DIR, f"{stock_code}.csv")
+
+def load_from_cache(stock_code):
+    """从缓存加载数据"""
+    cache_file = get_cache_path(stock_code)
+    if os.path.exists(cache_file):
+        try:
+            df = pd.read_csv(cache_file, parse_dates=['Date'])
+            if not df.empty:
+                print(f"📂 从缓存加载 {stock_code} 数据，共 {len(df)} 个交易日")
+                return df
+        except Exception as e:
+            print(f"⚠️ 缓存读取失败: {e}")
+    return None
+
+def save_to_cache(stock_code, df):
+    """保存数据到缓存"""
+    try:
+        cache_file = get_cache_path(stock_code)
+        # 如果缓存目录不存在，创建它
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        df.to_csv(cache_file, index=False)
+        print(f"💾 数据已缓存: {cache_file}")
+    except Exception as e:
+        print(f"⚠️ 缓存保存失败: {e}")
+
+# =============================================
+# baostock 数据获取（修复连接泄露版）
 # =============================================
 def fetch_data_baostock(stock_code, start="2020-01-01", end="2026-07-20", retries=5):
+    """升级版 baostock 数据获取，增强套接字错误处理"""
     print(f"📊 正在从 baostock 获取 {stock_code} 数据...")
     
     code = stock_code.replace('.', '').replace('sh', '').replace('sz', '')
@@ -155,10 +193,16 @@ def fetch_data_baostock(stock_code, start="2020-01-01", end="2026-07-20", retrie
     
     for attempt in range(retries):
         try:
-            bs.logout()
+            # 每次重试前强制重置连接
+            try:
+                bs.logout()
+            except:
+                pass
+            time.sleep(0.5)
+            
             lg = bs.login()
             if lg.error_code != '0':
-                print(f"⚠️ 登录失败: {lg.error_msg}")
+                print(f"⚠️ 登录失败 (尝试 {attempt+1}/{retries}): {lg.error_msg}")
                 if attempt < retries - 1:
                     wait_time = (attempt + 1) * 3
                     time.sleep(wait_time)
@@ -174,8 +218,9 @@ def fetch_data_baostock(stock_code, start="2020-01-01", end="2026-07-20", retrie
                 adjustflag="3"
             )
             
-            if rs.error_code != '0':
-                print(f"⚠️ 查询失败: {rs.error_msg}")
+            if rs is None or rs.error_code != '0':
+                error_msg = rs.error_msg if rs else "未知错误"
+                print(f"⚠️ 查询失败 (尝试 {attempt+1}/{retries}): {error_msg}")
                 bs.logout()
                 if attempt < retries - 1:
                     wait_time = (attempt + 1) * 3
@@ -192,7 +237,7 @@ def fetch_data_baostock(stock_code, start="2020-01-01", end="2026-07-20", retrie
             bs.logout()
             
             if not data_list:
-                print(f"⚠️ 未获取到数据")
+                print(f"⚠️ 未获取到数据 (尝试 {attempt+1}/{retries})")
                 if attempt < retries - 1:
                     wait_time = (attempt + 1) * 3
                     time.sleep(wait_time)
@@ -216,35 +261,62 @@ def fetch_data_baostock(stock_code, start="2020-01-01", end="2026-07-20", retrie
             return df
             
         except Exception as e:
-            if "invalid distance" in str(e) or "invalid start byte" in str(e):
+            error_msg = str(e)
+            if "WinError 10038" in error_msg or "non-socket" in error_msg:
+                print(f"⚠️ 套接字错误 (尝试 {attempt+1}/{retries}): 连接已关闭，正在重置并重试...")
+                try:
+                    bs.logout()
+                except:
+                    pass
+                time.sleep(5)
+            elif "invalid distance" in error_msg or "invalid start byte" in error_msg:
                 print(f"⚠️ 数据损坏 (尝试 {attempt+1}/{retries})")
             else:
                 print(f"⚠️ 第 {attempt+1} 次尝试失败: {e}")
+            
             if attempt < retries - 1:
-                wait_time = (attempt + 1) * 3
+                wait_time = (attempt + 1) * 4
+                print(f"⏳ 等待 {wait_time} 秒后重试...")
                 time.sleep(wait_time)
             else:
-                print(f"❌ 失败 {retries} 次")
+                print(f"❌ 失败 {retries} 次，放弃该股票")
                 return None
     
     return None
 
 # =============================================
-# 数据获取
+# 数据获取（带缓存 + 重试）
 # =============================================
 def fetch_data_with_fallback(stock_code, start="2020-01-01", end="2026-07-20"):
+    """
+    数据获取：优先从缓存读取，缓存不存在则从 baostock 获取并保存
+    """
     print(f"\n🔍 开始获取 {stock_code} 数据...")
     
     code = stock_code.replace('.', '').replace('sh', '').replace('sz', '')
     if len(code) < 6 and code.isdigit():
         code = code.zfill(6)
     
+    # ========== 第一步：尝试从缓存加载 ==========
+    cached_df = load_from_cache(code)
+    if cached_df is not None:
+        # 检查缓存数据是否包含所有需要的特征
+        required_cols = set(FEATURE_COLS + ['Date', 'Target_Price', 'Target_Direction'])
+        if required_cols.issubset(set(cached_df.columns)):
+            print(f"✅ 从缓存加载成功，共 {len(cached_df)} 个交易日")
+            return cached_df
+        else:
+            print("⚠️ 缓存数据不完整（缺少特征列），重新下载...")
+    
+    # ========== 第二步：从 baostock 下载 ==========
     for attempt in range(3):
         print(f"📡 尝试 baostock... (第 {attempt+1} 次)")
         df_raw = fetch_data_baostock(stock_code, start, end)
         if df_raw is not None:
             df = construct_features(df_raw)
             print(f"✅ baostock 获取成功，共 {len(df)} 个交易日")
+            # 保存到缓存
+            save_to_cache(code, df)
             return df
         else:
             if attempt < 2:
@@ -256,9 +328,23 @@ def fetch_data_with_fallback(stock_code, start="2020-01-01", end="2026-07-20"):
     return None
 
 # =============================================
-# 沪深300数据获取
+# 沪深300数据获取（带缓存）
 # =============================================
 def fetch_benchmark_data(start="2020-01-01", end="2026-07-20"):
+    """获取沪深300指数数据（带缓存）"""
+    cache_file = os.path.join(CACHE_DIR, "benchmark_300.csv")
+    
+    # 尝试从缓存加载
+    if os.path.exists(cache_file):
+        try:
+            df = pd.read_csv(cache_file, parse_dates=['Date'])
+            if not df.empty:
+                print(f"📂 从缓存加载沪深300数据，共 {len(df)} 条记录")
+                return df
+        except:
+            pass
+    
+    print("📊 正在获取沪深300指数数据...")
     try:
         lg = bs.login()
         if lg.error_code != '0':
@@ -290,7 +376,12 @@ def fetch_benchmark_data(start="2020-01-01", end="2026-07-20"):
         df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
         df = df.dropna()
         df['Date'] = pd.to_datetime(df['Date'])
-        return df.sort_values('Date').reset_index(drop=True)
+        df = df.sort_values('Date').reset_index(drop=True)
+        
+        # 保存到缓存
+        df.to_csv(cache_file, index=False)
+        print(f"💾 沪深300数据已缓存，共 {len(df)} 条记录")
+        return df
         
     except Exception as e:
         print(f"⚠️ 获取沪深300失败: {e}")
@@ -368,7 +459,7 @@ def train_and_save_model(stock_code):
     return model, scaler_X, scaler_y, df
 
 # =============================================
-# 回测函数（接受 benchmark_df 参数）
+# 回测函数
 # =============================================
 def run_backtest(stock_code, model, scaler_X, scaler_y, df, initial_capital=100000, benchmark_df=None):
     print(f"\n📊 开始回测: {stock_code}")
@@ -481,10 +572,9 @@ def run_backtest(stock_code, model, scaler_X, scaler_y, df, initial_capital=1000
         sharpe = 0
     print(f"📊 夏普比率 (年化): {sharpe:.3f}")
 
-    # ----- 沪深300对比（使用传入的 benchmark_df） -----
+    # ----- 沪深300对比 -----
     if benchmark_df is not None and not benchmark_df.empty:
         try:
-            # 统一日期格式
             backtest_df['Date'] = pd.to_datetime(backtest_df['Date'])
             benchmark_df['Date'] = pd.to_datetime(benchmark_df['Date'])
             
@@ -513,7 +603,7 @@ def run_backtest(stock_code, model, scaler_X, scaler_y, df, initial_capital=1000
 # =============================================
 if __name__ == "__main__":
     print("\n" + "="*50)
-    print("📈 A股量化回测系统 (baostock版)")
+    print("📈 A股量化回测系统 (缓存版)")
     print("="*50)
 
     while True:
