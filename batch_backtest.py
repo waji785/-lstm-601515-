@@ -29,7 +29,7 @@ WHITELIST_MIN_RETURN = 0.30
 WHITELIST_MIN_TRADES = 3
 WHITELIST_MAX_DRAWDOWN = 0.52
 
-# 重试配置
+# 重试配置（仅用于单只股票内部的递归重试）
 MAX_RETRIES_PER_STOCK = 3
 RETRY_DELAY = 5
 
@@ -65,7 +65,7 @@ def get_stock_list(retries=3):
         return None
 
 # =============================================
-# 单只股票回测包装器（带重试计数）
+# 单只股票回测包装器（带递归重试，但只在本股票内部）
 # =============================================
 def backtest_single_stock_wrapper(stock_code, stock_name="", benchmark_df=None, retry_count=0):
     """
@@ -177,55 +177,6 @@ def backtest_single_stock_wrapper(stock_code, stock_name="", benchmark_df=None, 
     return result
 
 # =============================================
-# 重试失败股票（集中重试）
-# =============================================
-def retry_failed_stocks(benchmark_df):
-    """对失败股票进行集中重试，最多重试 MAX_RETRIES_PER_STOCK 轮"""
-    global FAILED_STOCKS
-    
-    if not FAILED_STOCKS:
-        print("\n✅ 没有失败股票需要重试")
-        return []
-    
-    print(f"\n🔁 开始集中重试失败股票（最多 {MAX_RETRIES_PER_STOCK} 轮）...")
-    
-    retry_results = []
-    for attempt in range(MAX_RETRIES_PER_STOCK):
-        if not FAILED_STOCKS:
-            break
-        
-        print(f"\n📌 第 {attempt+1} 轮集中重试，剩余 {len(FAILED_STOCKS)} 只股票")
-        
-        current_round = FAILED_STOCKS.copy()
-        FAILED_STOCKS = []  # 清空，本轮成功的不会进入下一轮
-        
-        for code, name, reason in tqdm(current_round, desc=f"重试第 {attempt+1} 轮"):
-            print(f"  🔄 重试 {code} {name} (原原因: {reason})")
-            time.sleep(RETRY_DELAY)
-            
-            result = backtest_single_stock_wrapper(code, name, benchmark_df, retry_count=attempt)
-            if result["status"] == "成功":
-                retry_results.append(result)
-                print(f"  ✅ {code} 重试成功！收益: {result['total_return']*100:.2f}%")
-        
-        if not FAILED_STOCKS:
-            print(f"\n✅ 第 {attempt+1} 轮重试完成，所有股票已成功")
-            break
-        
-        if attempt < MAX_RETRIES_PER_STOCK - 1:
-            print(f"\n⏳ 等待 10 秒后进行下一轮重试...")
-            time.sleep(10)
-    
-    if FAILED_STOCKS:
-        print(f"\n⚠️ 仍有 {len(FAILED_STOCKS)} 只股票在 {MAX_RETRIES_PER_STOCK} 轮重试后失败，已放弃")
-        for code, name, reason in FAILED_STOCKS[:10]:
-            print(f"  ❌ {code} {name}: {reason}")
-        if len(FAILED_STOCKS) > 10:
-            print(f"  ... 共 {len(FAILED_STOCKS)} 只")
-    
-    return retry_results
-
-# =============================================
 # 生成白名单
 # =============================================
 def generate_whitelist(result_df):
@@ -261,10 +212,10 @@ def main():
     global FAILED_STOCKS
     
     print("="*60)
-    print("🚀 批量回测系统 (带3次重试失败放弃 + 增量缓存)")
+    print("🚀 批量回测系统 (无集中重试，仅单股票递归重试)")
     print("="*60)
     print(f"📌 配置: 线程数={MAX_WORKERS}, 测试上限={MAX_STOCKS_FULL or '全量'}")
-    print(f"📌 重试配置: 每只股票最多重试 {MAX_RETRIES_PER_STOCK} 次, 间隔 {RETRY_DELAY} 秒")
+    print(f"📌 单股票递归重试: 最多 {MAX_RETRIES_PER_STOCK} 次, 间隔 {RETRY_DELAY} 秒")
     
     # ========== 第一步：统一获取沪深300指数 ==========
     print("\n📊 正在获取沪深300指数数据（所有股票共用）...")
@@ -282,7 +233,6 @@ def main():
     
     if benchmark_df is None or benchmark_df.empty:
         print("⚠️ 沪深300指数数据获取失败，将跳过所有对比")
-    # =============================================
     
     # 获取股票列表
     stock_df = get_stock_list()
@@ -315,8 +265,8 @@ def main():
     results = []
     start_time = time.time()
     
-    # ========== 第一轮：并行执行 ==========
-    print("\n🚀 开始第一轮回测...")
+    # ========== 第一轮：并行执行（单股票内部递归重试） ==========
+    print("\n🚀 开始回测（单股票内部最多重试 3 次）...")
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_map = {}
         for t in tasks:
@@ -335,13 +285,10 @@ def main():
                 print(f"  ⚠️ {res['code']} {res['name']}: {res['status']}")
     
     elapsed = time.time() - start_time
-    print(f"\n⏱️ 第一轮耗时: {elapsed//60:.0f}分 {elapsed%60:.0f}秒")
+    print(f"\n⏱️ 回测耗时: {elapsed//60:.0f}分 {elapsed%60:.0f}秒")
     
-    # ========== 第二轮：集中重试失败股票 ==========
-    retry_results = retry_failed_stocks(benchmark_df)
-    if retry_results:
-        results.extend(retry_results)
-        print(f"\n✅ 重试成功 {len(retry_results)} 只股票")
+    # ========== 不再进行集中重试 ==========
+    print("\n✅ 回测完成，不再进行集中重试。")
     
     # ========== 最终统计 ==========
     print(f"\n📊 最终失败股票数: {len(FAILED_STOCKS)}")
