@@ -146,14 +146,12 @@ def construct_features(df):
     return df.dropna()
 
 # =============================================
-# 数据缓存函数
+# 数据缓存函数（增量更新核心）
 # =============================================
 def get_cache_path(stock_code):
-    """获取缓存文件路径"""
     return os.path.join(CACHE_DIR, f"{stock_code}.csv")
 
 def load_from_cache(stock_code):
-    """从缓存加载数据"""
     cache_file = get_cache_path(stock_code)
     if os.path.exists(cache_file):
         try:
@@ -166,21 +164,63 @@ def load_from_cache(stock_code):
     return None
 
 def save_to_cache(stock_code, df):
-    """保存数据到缓存"""
     try:
         cache_file = get_cache_path(stock_code)
-        # 如果缓存目录不存在，创建它
-        os.makedirs(CACHE_DIR, exist_ok=True)
         df.to_csv(cache_file, index=False)
-        print(f"💾 数据已缓存: {cache_file}")
+        print(f"💾 数据已保存至缓存: {cache_file}")
     except Exception as e:
         print(f"⚠️ 缓存保存失败: {e}")
+
+def update_cache_incremental(stock_code, start_date=None):
+    """
+    增量更新缓存：读取现有缓存的最后日期，下载新数据并追加
+    返回合并后的完整 DataFrame
+    """
+    cache_file = get_cache_path(stock_code)
+    old_df = load_from_cache(stock_code)
+    
+    if old_df is not None and not old_df.empty:
+        # 获取最后日期
+        last_date = old_df['Date'].max().strftime("%Y-%m-%d")
+        print(f"📂 缓存最新日期: {last_date}")
+        # 如果 start_date 未指定，则从 last_date 开始（仅下载新数据）
+        if start_date is None:
+            start_date = last_date
+        # 如果指定了 start_date，使用较大的那个
+        else:
+            start_date = max(start_date, last_date)
+    else:
+        old_df = pd.DataFrame()
+        if start_date is None:
+            start_date = "2020-01-01"
+    
+    # 下载新数据
+    print(f"📡 正在获取 {stock_code} 从 {start_date} 之后的数据...")
+    new_df = fetch_data_baostock(stock_code, start=start_date)
+    
+    if new_df is None or new_df.empty:
+        print(f"⚠️ {stock_code} 无新数据，返回已有缓存")
+        return old_df if not old_df.empty else None
+    
+    # 合并去重
+    if not old_df.empty:
+        combined = pd.concat([old_df, new_df], ignore_index=True)
+    else:
+        combined = new_df
+    
+    combined['Date'] = pd.to_datetime(combined['Date'])
+    combined = combined.drop_duplicates(subset=['Date']).sort_values('Date')
+    combined = combined.reset_index(drop=True)
+    
+    # 保存缓存
+    save_to_cache(stock_code, combined)
+    print(f"✅ {stock_code} 缓存更新成功，共 {len(combined)} 条记录")
+    return combined
 
 # =============================================
 # baostock 数据获取（修复连接泄露版）
 # =============================================
 def fetch_data_baostock(stock_code, start="2020-01-01", end="2026-07-20", retries=5):
-    """升级版 baostock 数据获取，增强套接字错误处理"""
     print(f"📊 正在从 baostock 获取 {stock_code} 数据...")
     
     code = stock_code.replace('.', '').replace('sh', '').replace('sz', '')
@@ -193,7 +233,6 @@ def fetch_data_baostock(stock_code, start="2020-01-01", end="2026-07-20", retrie
     
     for attempt in range(retries):
         try:
-            # 每次重试前强制重置连接
             try:
                 bs.logout()
             except:
@@ -285,56 +324,54 @@ def fetch_data_baostock(stock_code, start="2020-01-01", end="2026-07-20", retrie
     return None
 
 # =============================================
-# 数据获取（带缓存 + 重试）
+# 数据获取（主入口：优先缓存，增量更新）
 # =============================================
 def fetch_data_with_fallback(stock_code, start="2020-01-01", end="2026-07-20"):
     """
-    数据获取：优先从缓存读取，缓存不存在则从 baostock 获取并保存
+    数据获取：优先使用增量更新的缓存，否则全量下载
     """
     print(f"\n🔍 开始获取 {stock_code} 数据...")
-    
     code = stock_code.replace('.', '').replace('sh', '').replace('sz', '')
     if len(code) < 6 and code.isdigit():
         code = code.zfill(6)
     
-    # ========== 第一步：尝试从缓存加载 ==========
+    # 尝试从缓存加载（如果存在且完整）
     cached_df = load_from_cache(code)
     if cached_df is not None:
-        # 检查缓存数据是否包含所有需要的特征
         required_cols = set(FEATURE_COLS + ['Date', 'Target_Price', 'Target_Direction'])
         if required_cols.issubset(set(cached_df.columns)):
-            print(f"✅ 从缓存加载成功，共 {len(cached_df)} 个交易日")
+            print(f"✅ 缓存数据完整，共 {len(cached_df)} 个交易日")
             return cached_df
         else:
-            print("⚠️ 缓存数据不完整（缺少特征列），重新下载...")
+            print("⚠️ 缓存数据不完整，重新下载...")
     
-    # ========== 第二步：从 baostock 下载 ==========
-    for attempt in range(3):
-        print(f"📡 尝试 baostock... (第 {attempt+1} 次)")
-        df_raw = fetch_data_baostock(stock_code, start, end)
-        if df_raw is not None:
-            df = construct_features(df_raw)
-            print(f"✅ baostock 获取成功，共 {len(df)} 个交易日")
-            # 保存到缓存
-            save_to_cache(code, df)
-            return df
-        else:
-            if attempt < 2:
-                wait_time = 3
-                print(f"⏳ 等待 {wait_time} 秒后重试...")
-                time.sleep(wait_time)
-    
-    print("❌ baostock 获取失败")
-    return None
+    # 使用增量更新功能（如果缓存存在则追加，否则全量）
+    df = update_cache_incremental(code, start_date=start)
+    if df is not None:
+        # 确保特征完整
+        df = construct_features(df)
+        return df
+    else:
+        # 如果增量更新失败，尝试全量下载
+        for attempt in range(3):
+            print(f"📡 尝试全量下载 baostock... (第 {attempt+1} 次)")
+            df_raw = fetch_data_baostock(code, start, end)
+            if df_raw is not None:
+                df = construct_features(df_raw)
+                save_to_cache(code, df)
+                print(f"✅ 全量下载成功，共 {len(df)} 个交易日")
+                return df
+            else:
+                if attempt < 2:
+                    time.sleep(3)
+        print("❌ 所有数据获取方式均失败")
+        return None
 
 # =============================================
 # 沪深300数据获取（带缓存）
 # =============================================
 def fetch_benchmark_data(start="2020-01-01", end="2026-07-20"):
-    """获取沪深300指数数据（带缓存）"""
     cache_file = os.path.join(CACHE_DIR, "benchmark_300.csv")
-    
-    # 尝试从缓存加载
     if os.path.exists(cache_file):
         try:
             df = pd.read_csv(cache_file, parse_dates=['Date'])
@@ -343,46 +380,33 @@ def fetch_benchmark_data(start="2020-01-01", end="2026-07-20"):
                 return df
         except:
             pass
-    
     print("📊 正在获取沪深300指数数据...")
     try:
         lg = bs.login()
         if lg.error_code != '0':
             return None
-        
         rs = bs.query_history_k_data_plus("sh.000300",
-            fields="date,close", 
-            start_date=start, 
-            end_date=end,
-            frequency="d", 
-            adjustflag="3")
-        
+            fields="date,close", start_date=start, end_date=end,
+            frequency="d", adjustflag="3")
         if rs.error_code != '0':
             bs.logout()
             return None
-        
         data = []
         while (rs.error_code == '0') & rs.next():
             row = rs.get_row_data()
             if row:
                 data.append(row)
-        
         bs.logout()
-        
         if not data:
             return None
-        
         df = pd.DataFrame(data, columns=['Date', 'Close'])
         df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
         df = df.dropna()
         df['Date'] = pd.to_datetime(df['Date'])
         df = df.sort_values('Date').reset_index(drop=True)
-        
-        # 保存到缓存
         df.to_csv(cache_file, index=False)
         print(f"💾 沪深300数据已缓存，共 {len(df)} 条记录")
         return df
-        
     except Exception as e:
         print(f"⚠️ 获取沪深300失败: {e}")
         return None
@@ -572,7 +596,7 @@ def run_backtest(stock_code, model, scaler_X, scaler_y, df, initial_capital=1000
         sharpe = 0
     print(f"📊 夏普比率 (年化): {sharpe:.3f}")
 
-    # ----- 沪深300对比 -----
+    # 沪深300对比
     if benchmark_df is not None and not benchmark_df.empty:
         try:
             backtest_df['Date'] = pd.to_datetime(backtest_df['Date'])
@@ -603,7 +627,7 @@ def run_backtest(stock_code, model, scaler_X, scaler_y, df, initial_capital=1000
 # =============================================
 if __name__ == "__main__":
     print("\n" + "="*50)
-    print("📈 A股量化回测系统 (缓存版)")
+    print("📈 A股量化回测系统 (增量缓存版)")
     print("="*50)
 
     while True:

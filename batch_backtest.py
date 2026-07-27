@@ -12,7 +12,6 @@ warnings.filterwarnings('ignore')
 # ----- 直接从主程序导入核心函数和配置 -----
 from stock_full2 import (
     FEATURE_COLS,
-    construct_features,
     fetch_data_with_fallback,
     train_and_save_model,
     run_backtest,
@@ -26,23 +25,9 @@ from stock_full2 import (
 MAX_WORKERS = 2
 MAX_STOCKS_FULL = None
 WHITELIST_FILE = "whitelist.csv"
-# 最低总收益率阈值：只有总收益率超过 30% 的股票才会进入白名单
-# 含义：策略在该股票上的累计收益必须超过此比例，才认为值得关注
-# 取值范围：0.0 ~ 1.0（对应 0% ~ 100%）
-# 建议值：0.20 ~ 0.50（根据市场行情调整，牛市可提高，熊市可降低）
 WHITELIST_MIN_RETURN = 0.30
-
-# 最少交易次数：至少交易 3 次才会被纳入白名单
-# 含义：交易次数太少（比如 1-2 次）可能是运气成分，缺乏统计显著性
-# 取值范围：正整数（一般建议 3 ~ 10）
-# 建议值：3（最低要求）或 5（更严格）
 WHITELIST_MIN_TRADES = 3
-
-# 最大可接受回撤：最大回撤不超过 50% 才能进入白名单
-# 含义：即使收益很高，如果回撤过大（比如超过 50%），风险太高，不适合稳健策略
-# 取值范围：0.0 ~ 1.0（对应 0% ~ 100%）
-# 建议值：0.30 ~ 0.50（30%~50% 回撤容忍度，可根据风险偏好调整）
-WHITELIST_MAX_DRAWDOWN = 0.50
+WHITELIST_MAX_DRAWDOWN = 0.52
 
 # 重试配置
 MAX_RETRIES_PER_STOCK = 3
@@ -118,7 +103,7 @@ def backtest_single_stock_wrapper(stock_code, stock_name="", benchmark_df=None, 
     }
     
     try:
-        # ----- 1. 获取数据 -----
+        # ----- 1. 获取数据（内部已支持增量更新） -----
         df = fetch_data_with_fallback(stock_code)
         if df is None or len(df) < 21:
             result["status"] = "数据不足"
@@ -218,12 +203,10 @@ def retry_failed_stocks(benchmark_df):
             print(f"  🔄 重试 {code} {name} (原原因: {reason})")
             time.sleep(RETRY_DELAY)
             
-            # 传入当前重试轮次作为重试计数
             result = backtest_single_stock_wrapper(code, name, benchmark_df, retry_count=attempt)
             if result["status"] == "成功":
                 retry_results.append(result)
                 print(f"  ✅ {code} 重试成功！收益: {result['total_return']*100:.2f}%")
-            # 如果重试后仍然失败，会留在 FAILED_STOCKS 中（由 wrapper 添加）
         
         if not FAILED_STOCKS:
             print(f"\n✅ 第 {attempt+1} 轮重试完成，所有股票已成功")
@@ -233,7 +216,6 @@ def retry_failed_stocks(benchmark_df):
             print(f"\n⏳ 等待 10 秒后进行下一轮重试...")
             time.sleep(10)
     
-    # 最终统计：标记那些仍然失败的股票为"放弃"
     if FAILED_STOCKS:
         print(f"\n⚠️ 仍有 {len(FAILED_STOCKS)} 只股票在 {MAX_RETRIES_PER_STOCK} 轮重试后失败，已放弃")
         for code, name, reason in FAILED_STOCKS[:10]:
@@ -279,7 +261,7 @@ def main():
     global FAILED_STOCKS
     
     print("="*60)
-    print("🚀 批量回测系统 (带3次重试失败放弃)")
+    print("🚀 批量回测系统 (带3次重试失败放弃 + 增量缓存)")
     print("="*60)
     print(f"📌 配置: 线程数={MAX_WORKERS}, 测试上限={MAX_STOCKS_FULL or '全量'}")
     print(f"📌 重试配置: 每只股票最多重试 {MAX_RETRIES_PER_STOCK} 次, 间隔 {RETRY_DELAY} 秒")
