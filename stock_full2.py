@@ -172,21 +172,15 @@ def save_to_cache(stock_code, df):
         print(f"⚠️ 缓存保存失败: {e}")
 
 def update_cache_incremental(stock_code, start_date=None):
-    """
-    增量更新缓存：读取现有缓存的最后日期，下载新数据并追加
-    返回合并后的完整 DataFrame
-    """
+    """增量更新缓存：读取现有缓存的最后日期，下载新数据并追加"""
     cache_file = get_cache_path(stock_code)
     old_df = load_from_cache(stock_code)
     
     if old_df is not None and not old_df.empty:
-        # 获取最后日期
         last_date = old_df['Date'].max().strftime("%Y-%m-%d")
         print(f"📂 缓存最新日期: {last_date}")
-        # 如果 start_date 未指定，则从 last_date 开始（仅下载新数据）
         if start_date is None:
             start_date = last_date
-        # 如果指定了 start_date，使用较大的那个
         else:
             start_date = max(start_date, last_date)
     else:
@@ -194,7 +188,6 @@ def update_cache_incremental(stock_code, start_date=None):
         if start_date is None:
             start_date = "2020-01-01"
     
-    # 下载新数据
     print(f"📡 正在获取 {stock_code} 从 {start_date} 之后的数据...")
     new_df = fetch_data_baostock(stock_code, start=start_date)
     
@@ -202,7 +195,6 @@ def update_cache_incremental(stock_code, start_date=None):
         print(f"⚠️ {stock_code} 无新数据，返回已有缓存")
         return old_df if not old_df.empty else None
     
-    # 合并去重
     if not old_df.empty:
         combined = pd.concat([old_df, new_df], ignore_index=True)
     else:
@@ -212,7 +204,6 @@ def update_cache_incremental(stock_code, start_date=None):
     combined = combined.drop_duplicates(subset=['Date']).sort_values('Date')
     combined = combined.reset_index(drop=True)
     
-    # 保存缓存
     save_to_cache(stock_code, combined)
     print(f"✅ {stock_code} 缓存更新成功，共 {len(combined)} 条记录")
     return combined
@@ -327,15 +318,11 @@ def fetch_data_baostock(stock_code, start="2020-01-01", end="2026-07-20", retrie
 # 数据获取（主入口：优先缓存，增量更新）
 # =============================================
 def fetch_data_with_fallback(stock_code, start="2020-01-01", end="2026-07-20"):
-    """
-    数据获取：优先使用增量更新的缓存，否则全量下载
-    """
     print(f"\n🔍 开始获取 {stock_code} 数据...")
     code = stock_code.replace('.', '').replace('sh', '').replace('sz', '')
     if len(code) < 6 and code.isdigit():
         code = code.zfill(6)
     
-    # 尝试从缓存加载（如果存在且完整）
     cached_df = load_from_cache(code)
     if cached_df is not None:
         required_cols = set(FEATURE_COLS + ['Date', 'Target_Price', 'Target_Direction'])
@@ -345,14 +332,11 @@ def fetch_data_with_fallback(stock_code, start="2020-01-01", end="2026-07-20"):
         else:
             print("⚠️ 缓存数据不完整，重新下载...")
     
-    # 使用增量更新功能（如果缓存存在则追加，否则全量）
     df = update_cache_incremental(code, start_date=start)
     if df is not None:
-        # 确保特征完整
         df = construct_features(df)
         return df
     else:
-        # 如果增量更新失败，尝试全量下载
         for attempt in range(3):
             print(f"📡 尝试全量下载 baostock... (第 {attempt+1} 次)")
             df_raw = fetch_data_baostock(code, start, end)
@@ -423,12 +407,16 @@ def create_sequences(features, price_targets, dir_targets, seq_len=20):
     return np.array(X, dtype=np.float32), np.array(yp, dtype=np.float32), np.array(yd, dtype=np.float32)
 
 # =============================================
-# 训练函数
+# 训练函数（GPU支持）
 # =============================================
 def train_and_save_model(stock_code):
     df = fetch_data_with_fallback(stock_code)
     if df is None:
         return None, None, None, None
+
+    # ----- 设备检测 -----
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"🚀 训练使用设备: {device}")
 
     scaler_X = StandardScaler()
     scaled_features = scaler_X.fit_transform(df[FEATURE_COLS].values)
@@ -445,16 +433,17 @@ def train_and_save_model(stock_code):
     y_price_train_scaled = scaler_y.fit_transform(y_price_train.reshape(-1, 1)).ravel()
     y_price_test_scaled = scaler_y.transform(y_price_test.reshape(-1, 1)).ravel()
 
-    X_train_t = torch.tensor(X_train, dtype=torch.float32)
-    X_test_t = torch.tensor(X_test, dtype=torch.float32)
-    y_price_train_t = torch.tensor(y_price_train_scaled, dtype=torch.float32).reshape(-1, 1)
-    y_price_test_t = torch.tensor(y_price_test_scaled, dtype=torch.float32).reshape(-1, 1)
-    y_dir_train_t = torch.tensor(y_dir_train, dtype=torch.long)
-    y_dir_test_t = torch.tensor(y_dir_test, dtype=torch.long)
+    # ----- 张量迁移到设备 -----
+    X_train_t = torch.tensor(X_train, dtype=torch.float32).to(device)
+    X_test_t = torch.tensor(X_test, dtype=torch.float32).to(device)
+    y_price_train_t = torch.tensor(y_price_train_scaled, dtype=torch.float32).reshape(-1, 1).to(device)
+    y_price_test_t = torch.tensor(y_price_test_scaled, dtype=torch.float32).reshape(-1, 1).to(device)
+    y_dir_train_t = torch.tensor(y_dir_train, dtype=torch.long).to(device)
+    y_dir_test_t = torch.tensor(y_dir_test, dtype=torch.long).to(device)
 
     print(f"✅ 训练样本: {len(X_train)}, 测试样本: {len(X_test)}")
 
-    model = DualLSTM(input_size=len(FEATURE_COLS))
+    model = DualLSTM(input_size=len(FEATURE_COLS)).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     criterion_reg = nn.MSELoss()
     criterion_cls = nn.CrossEntropyLoss()
@@ -462,7 +451,9 @@ def train_and_save_model(stock_code):
     print("🚀 开始训练...")
     for epoch in range(50):
         price_pred, dir_pred = model(X_train_t)
-        loss = criterion_reg(price_pred, y_price_train_t) + criterion_cls(dir_pred, y_dir_train_t)
+        loss_reg = criterion_reg(price_pred, y_price_train_t)
+        loss_cls = criterion_cls(dir_pred, y_dir_train_t)
+        loss = loss_reg + loss_cls
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -472,18 +463,20 @@ def train_and_save_model(stock_code):
     model.eval()
     with torch.no_grad():
         pred_price_scaled, _ = model(X_test_t)
-        pred_price_real = scaler_y.inverse_transform(pred_price_scaled.numpy())
+        # 将结果移回 CPU 以便 numpy 处理
+        pred_price_real = scaler_y.inverse_transform(pred_price_scaled.cpu().numpy())
         mae = np.mean(np.abs(pred_price_real - y_price_test))
         print(f"📈 测试集 MAE: {mae:.2f} 元")
 
-    torch.save(model.state_dict(), 'model.pth')
+    # 保存模型和 Scaler（模型参数在 CPU 上保存）
+    torch.save(model.cpu().state_dict(), 'model.pth')
     joblib.dump(scaler_X, 'scaler_X.pkl')
     joblib.dump(scaler_y, 'scaler_y.pkl')
     print("✅ 模型和Scaler已保存")
     return model, scaler_X, scaler_y, df
 
 # =============================================
-# 回测函数
+# 回测函数（接收 benchmark_df）
 # =============================================
 def run_backtest(stock_code, model, scaler_X, scaler_y, df, initial_capital=100000, benchmark_df=None):
     print(f"\n📊 开始回测: {stock_code}")
@@ -502,7 +495,12 @@ def run_backtest(stock_code, model, scaler_X, scaler_y, df, initial_capital=1000
     if len(X) == 0:
         return None
 
-    X_tensor = torch.tensor(X, dtype=torch.float32)
+    # 回测推理时可以使用 CPU（减少显存占用）
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    model.eval()
+
+    X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
     dates = df['Date'].values[20:]
     close_prices = df['Close'].values[20:]
 
@@ -512,13 +510,13 @@ def run_backtest(stock_code, model, scaler_X, scaler_y, df, initial_capital=1000
     entry_price = 0.0
     trade_log = []
 
-    model.eval()
     print("🚀 开始生成交易信号...")
     with torch.no_grad():
         for i in range(len(X_tensor)):
             current_price = close_prices[i]
-            _, dir_logits = model(X_tensor[i].unsqueeze(0))
-            prob = torch.softmax(dir_logits, dim=1).squeeze().numpy()
+            x_sample = X_tensor[i].unsqueeze(0)
+            _, dir_logits = model(x_sample)
+            prob = torch.softmax(dir_logits, dim=1).squeeze().cpu().numpy()
             up_prob = prob[1]
 
             if holdings > 0:
@@ -601,7 +599,6 @@ def run_backtest(stock_code, model, scaler_X, scaler_y, df, initial_capital=1000
         try:
             backtest_df['Date'] = pd.to_datetime(backtest_df['Date'])
             benchmark_df['Date'] = pd.to_datetime(benchmark_df['Date'])
-            
             merged = pd.merge(backtest_df[['Date', 'Capital']], benchmark_df, on='Date', how='inner')
             if len(merged) > 0:
                 init_price = merged['Close'].iloc[0]
@@ -627,7 +624,7 @@ def run_backtest(stock_code, model, scaler_X, scaler_y, df, initial_capital=1000
 # =============================================
 if __name__ == "__main__":
     print("\n" + "="*50)
-    print("📈 A股量化回测系统 (增量缓存版)")
+    print("📈 A股量化回测系统 (GPU支持 + 增量缓存)")
     print("="*50)
 
     while True:

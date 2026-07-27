@@ -22,7 +22,7 @@ from stock_full2 import (
 # =============================================
 # 配置
 # =============================================
-MAX_WORKERS = 2
+MAX_WORKERS = 16
 MAX_STOCKS_FULL = None
 WHITELIST_FILE = "whitelist.csv"
 WHITELIST_MIN_RETURN = 0.30
