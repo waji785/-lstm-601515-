@@ -40,9 +40,9 @@ set_seed(SEED)
 # =============================================
 # 单股票回测（使用已训练好的模型）
 # =============================================
-def backtest_single_stock_with_model(stock_code, stock_name, model, scaler_X, scaler_y):
+def backtest_single_stock_with_model(stock_code, stock_name):
     """
-    使用全市模型回测单只股票，不重新训练
+    使用全市模型回测单只股票（每个线程独立加载模型）
     """
     result = {
         "code": stock_code,
@@ -62,6 +62,16 @@ def backtest_single_stock_with_model(stock_code, stock_name, model, scaler_X, sc
         if df is None or len(df) < 100:
             result["status"] = "数据不足"
             return result
+        
+        # 独立加载模型（每个线程单独加载，避免共享状态）
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = DualLSTM(input_size=len(FEATURE_COLS)).to(device)
+        model.load_state_dict(torch.load('model.pth', map_location=device))
+        model.eval()
+        
+        # 加载标准化器（也可共享，但为保险也独立加载）
+        scaler_X = joblib.load('scaler_X.pkl')
+        scaler_y = joblib.load('scaler_y.pkl')
         
         # 使用全市模型回测
         backtest_df = run_trend_backtest(df, model, scaler_X, scaler_y)
@@ -85,13 +95,10 @@ def backtest_single_stock_with_model(stock_code, stock_name, model, scaler_X, sc
     except Exception as e:
         result["status"] = "异常"
         result["error_msg"] = str(e)
-        # 打印完整异常堆栈，方便调试
         import traceback
-        print(f"❌ {stock_code} 异常详情:")
         traceback.print_exc()
     
     return result
-
 # =============================================
 # 获取股票列表（过滤北交所）
 # =============================================
@@ -216,7 +223,7 @@ def main():
         for idx, t in enumerate(tasks):
             future = executor.submit(
                 backtest_single_stock_with_model,
-                t['code'], t['name'], model, scaler_X, scaler_y
+                t['code'], t['name']
             )
             future_map[future] = t
             # 控制提交间隔
