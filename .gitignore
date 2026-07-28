@@ -165,7 +165,6 @@ analysis_output/
 model.pth
 scaler_y.pkl
 *.pkl
-*.py
 available_proxies.txt
 available_proxies_20260726_093242.txt
 available_proxies.txt
@@ -185,3 +184,6 @@ model.pth
 scaler_X.pkl
 scaler_y.pkl
 backtest_result.png
+66ip.py
+ai.py
+test.py
