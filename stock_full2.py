@@ -10,6 +10,8 @@ import joblib
 import matplotlib.pyplot as plt
 import os
 import time
+import datetime  # 新增：用于获取当前日期
+
 warnings.filterwarnings('ignore')
 
 # =============================================
@@ -31,6 +33,12 @@ TAKE_PROFIT = 0.30
 # =============================================
 CACHE_DIR = "stock_data_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
+
+# =============================================
+# 获取当前日期（动态截止日期）
+# =============================================
+TODAY = datetime.datetime.now().strftime("%Y-%m-%d")
+print(f"📅 数据截止日期: {TODAY}")
 
 # =============================================
 # 特征列表
@@ -146,6 +154,15 @@ def construct_features(df):
     return df.dropna()
 
 # =============================================
+# 数据清洗函数
+# =============================================
+def clean_data(df):
+    """替换数据中的无穷大和 NaN 为 0，确保模型可训练"""
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.fillna(0)
+    return df
+
+# =============================================
 # 数据缓存函数（增量更新核心）
 # =============================================
 def get_cache_path(stock_code):
@@ -211,7 +228,7 @@ def update_cache_incremental(stock_code, start_date=None):
 # =============================================
 # baostock 数据获取（修复连接泄露版）
 # =============================================
-def fetch_data_baostock(stock_code, start="2020-01-01", end="2026-07-20", retries=5):
+def fetch_data_baostock(stock_code, start="2020-01-01", end=TODAY, retries=5):
     print(f"📊 正在从 baostock 获取 {stock_code} 数据...")
     
     code = stock_code.replace('.', '').replace('sh', '').replace('sz', '')
@@ -315,33 +332,41 @@ def fetch_data_baostock(stock_code, start="2020-01-01", end="2026-07-20", retrie
     return None
 
 # =============================================
-# 数据获取（主入口：优先缓存，增量更新）
+# 数据获取（主入口：优先缓存，增量更新，带数据清洗）
 # =============================================
-def fetch_data_with_fallback(stock_code, start="2020-01-01", end="2026-07-20"):
+def fetch_data_with_fallback(stock_code, start="2020-01-01", end=TODAY):
     print(f"\n🔍 开始获取 {stock_code} 数据...")
     code = stock_code.replace('.', '').replace('sh', '').replace('sz', '')
     if len(code) < 6 and code.isdigit():
         code = code.zfill(6)
     
+    # 尝试从缓存加载
     cached_df = load_from_cache(code)
     if cached_df is not None:
         required_cols = set(FEATURE_COLS + ['Date', 'Target_Price', 'Target_Direction'])
         if required_cols.issubset(set(cached_df.columns)):
             print(f"✅ 缓存数据完整，共 {len(cached_df)} 个交易日")
-            return cached_df
+            # 清洗缓存数据（防止旧数据含有异常值）
+            return clean_data(cached_df)
         else:
             print("⚠️ 缓存数据不完整，重新下载...")
     
+    # 增量更新或全量下载
     df = update_cache_incremental(code, start_date=start)
     if df is not None:
-        df = construct_features(df)
+        if 'Target_Price' not in df.columns:
+            df = construct_features(df)
+        df = clean_data(df)
+        save_to_cache(code, df)
         return df
     else:
+        # 全量下载
         for attempt in range(3):
             print(f"📡 尝试全量下载 baostock... (第 {attempt+1} 次)")
             df_raw = fetch_data_baostock(code, start, end)
             if df_raw is not None:
                 df = construct_features(df_raw)
+                df = clean_data(df)
                 save_to_cache(code, df)
                 print(f"✅ 全量下载成功，共 {len(df)} 个交易日")
                 return df
@@ -352,9 +377,9 @@ def fetch_data_with_fallback(stock_code, start="2020-01-01", end="2026-07-20"):
         return None
 
 # =============================================
-# 沪深300数据获取（带缓存）
+# 沪深300数据获取（带缓存，动态截止日期）
 # =============================================
-def fetch_benchmark_data(start="2020-01-01", end="2026-07-20"):
+def fetch_benchmark_data(start="2020-01-01", end=TODAY):
     cache_file = os.path.join(CACHE_DIR, "benchmark_300.csv")
     if os.path.exists(cache_file):
         try:
@@ -414,7 +439,7 @@ def train_and_save_model(stock_code):
     if df is None:
         return None, None, None, None
 
-    # ----- 设备检测 -----
+    # 设备检测
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"🚀 训练使用设备: {device}")
 
@@ -433,7 +458,7 @@ def train_and_save_model(stock_code):
     y_price_train_scaled = scaler_y.fit_transform(y_price_train.reshape(-1, 1)).ravel()
     y_price_test_scaled = scaler_y.transform(y_price_test.reshape(-1, 1)).ravel()
 
-    # ----- 张量迁移到设备 -----
+    # 张量迁移到设备
     X_train_t = torch.tensor(X_train, dtype=torch.float32).to(device)
     X_test_t = torch.tensor(X_test, dtype=torch.float32).to(device)
     y_price_train_t = torch.tensor(y_price_train_scaled, dtype=torch.float32).reshape(-1, 1).to(device)
@@ -463,12 +488,11 @@ def train_and_save_model(stock_code):
     model.eval()
     with torch.no_grad():
         pred_price_scaled, _ = model(X_test_t)
-        # 将结果移回 CPU 以便 numpy 处理
         pred_price_real = scaler_y.inverse_transform(pred_price_scaled.cpu().numpy())
         mae = np.mean(np.abs(pred_price_real - y_price_test))
         print(f"📈 测试集 MAE: {mae:.2f} 元")
 
-    # 保存模型和 Scaler（模型参数在 CPU 上保存）
+    # 保存模型和 Scaler
     torch.save(model.cpu().state_dict(), 'model.pth')
     joblib.dump(scaler_X, 'scaler_X.pkl')
     joblib.dump(scaler_y, 'scaler_y.pkl')
@@ -476,7 +500,7 @@ def train_and_save_model(stock_code):
     return model, scaler_X, scaler_y, df
 
 # =============================================
-# 回测函数（接收 benchmark_df）
+# 回测函数
 # =============================================
 def run_backtest(stock_code, model, scaler_X, scaler_y, df, initial_capital=100000, benchmark_df=None):
     print(f"\n📊 开始回测: {stock_code}")
@@ -495,7 +519,7 @@ def run_backtest(stock_code, model, scaler_X, scaler_y, df, initial_capital=1000
     if len(X) == 0:
         return None
 
-    # 回测推理时可以使用 CPU（减少显存占用）
+    # 回测推理时可以使用 CPU（减少显存占用）或 GPU
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
