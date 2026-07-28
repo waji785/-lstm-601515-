@@ -33,7 +33,7 @@ from stock_full2 import (
 # =============================================
 # 配置
 # =============================================
-MAX_WORKERS = 2                     # 降低并发，避免被baostock限流
+MAX_WORKERS = 8                     # 降低并发，避免被baostock限流
 MAX_STOCKS_FULL = None              # None表示全量
 WHITELIST_FILE = "whitelist.csv"
 WHITELIST_MIN_RETURN = 0.30

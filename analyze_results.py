@@ -15,6 +15,12 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # =============================================
+# 强制指定中文字体（解决中文显示问题）
+# =============================================
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
+plt.rcParams['axes.unicode_minus'] = False
+
+# =============================================
 # 1. 配置
 # =============================================
 INPUT_FILE = "batch_results.csv"          # 输入文件名
@@ -50,6 +56,9 @@ def clean_data(df):
     
     # 剔除夏普比率异常值
     df_success = df_success[df_success["sharpe_ratio"] > -10]
+    
+    # 过滤掉收益率为 0 且交易次数为 0 的无效记录（没有产生交易的股票）
+    df_success = df_success[~((df_success["total_return"] == 0) & (df_success["trade_count"] == 0))]
     
     return df_success
 
