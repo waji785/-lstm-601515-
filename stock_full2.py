@@ -13,6 +13,7 @@ import os
 import time
 import datetime
 import random
+from torch.amp import autocast, GradScaler
 warnings.filterwarnings('ignore')
 
 # =============================================
@@ -194,7 +195,8 @@ def load_all_stock_data(cache_dir="stock_data_cache", max_stocks=None, min_days=
         try:
             df = pd.read_csv(os.path.join(cache_dir, file), parse_dates=['Date'])
             if len(df) >= min_days:
-                cols = FEATURE_COLS + ['Target_Price', 'Target_Direction']
+                # ----- 保留 Date 列用于排序 -----
+                cols = ['Date'] + FEATURE_COLS + ['Target_Price', 'Target_Direction']
                 df = df[cols].copy()
                 all_dfs.append(df)
                 if (i+1) % 200 == 0:
@@ -205,6 +207,8 @@ def load_all_stock_data(cache_dir="stock_data_cache", max_stocks=None, min_days=
         print("❌ 未加载到任何有效数据")
         return None
     combined = pd.concat(all_dfs, ignore_index=True)
+    # ----- 按日期排序 -----
+    combined = combined.sort_values('Date').reset_index(drop=True)
     print(f"✅ 共加载 {len(all_dfs)} 只股票，总样本数: {len(combined)}")
     return combined
 def run_trend_backtest(df, model, scaler_X, scaler_y, initial_capital=100000):
@@ -550,7 +554,18 @@ def fetch_benchmark_data(start="2020-01-01", end=TODAY):
 # =============================================
 # 训练函数
 # =============================================
-def train_and_save_model(stock_code=None, df=None, batch_size=1024, epochs=100):
+def train_and_save_model(stock_code=None, df=None, batch_size=1024, epochs=100, train_ratio=0.7):
+    """
+    训练模型并保存
+
+    参数:
+        stock_code: 单只股票代码（与 df 二选一）
+        df: 合并后的 DataFrame（与 stock_code 二选一）
+        batch_size: 训练批次大小
+        epochs: 最大训练轮数
+        train_ratio: 训练集比例（前 train_ratio 为训练，后 1-train_ratio 为测试）
+    """
+    # ==================== 数据加载 ====================
     if df is None and stock_code is not None:
         df = load_from_cache(stock_code)
         if df is None:
@@ -560,11 +575,15 @@ def train_and_save_model(stock_code=None, df=None, batch_size=1024, epochs=100):
             df = construct_features(df)
             df = clean_data(df)
     elif df is None and stock_code is None:
+        # 全市数据训练（默认加载前200只，可通过外部参数调整）
         df = load_all_stock_data(max_stocks=200)
         if df is None:
             return None, None, None, None
     elif df is not None:
-        pass
+        if 'Date' in df.columns:
+            df = df.sort_values('Date').reset_index(drop=True)
+        else:
+            print("⚠️ 传入的 DataFrame 没有 Date 列，无法保证时间顺序")
     else:
         return None, None, None, None
 
@@ -576,33 +595,49 @@ def train_and_save_model(stock_code=None, df=None, batch_size=1024, epochs=100):
     print(f"🚀 训练使用设备: {device}")
     print(f"📊 总样本数: {len(df)}")
 
+    # ==================== 特征标准化 ====================
     scaler_X = StandardScaler()
     scaled_features = scaler_X.fit_transform(df[FEATURE_COLS].values)
     price_targets = df['Target_Price'].values
     dir_targets = df['Target_Direction'].values
 
+    # ==================== 构建序列 ====================
     X, y_price, y_dir = create_sequences(scaled_features, price_targets, dir_targets)
-    split = int(len(X) * 0.8)
+
+    # ==================== 时间分割 ====================
+    split = int(len(X) * train_ratio)
     X_train, X_test = X[:split], X[split:]
     y_price_train, y_price_test = y_price[:split], y_price[split:]
     y_dir_train, y_dir_test = y_dir[:split], y_dir[split:]
+    print(f"📊 时间分割: 训练 {split} 条 ({train_ratio*100:.0f}%), 测试 {len(X)-split} 条 ({(1-train_ratio)*100:.0f}%)")
 
+    # ==================== 标签标准化（仅使用训练集拟合） ====================
     scaler_y = StandardScaler()
     y_price_train_scaled = scaler_y.fit_transform(y_price_train.reshape(-1, 1)).ravel()
     y_price_test_scaled = scaler_y.transform(y_price_test.reshape(-1, 1)).ravel()
 
-    X_train_t = torch.tensor(X_train, dtype=torch.float32).to(device)
-    X_test_t = torch.tensor(X_test, dtype=torch.float32).to(device)
-    y_price_train_t = torch.tensor(y_price_train_scaled, dtype=torch.float32).reshape(-1, 1).to(device)
-    y_price_test_t = torch.tensor(y_price_test_scaled, dtype=torch.float32).reshape(-1, 1).to(device)
-    y_dir_train_t = torch.tensor(y_dir_train, dtype=torch.long).to(device)
-    y_dir_test_t = torch.tensor(y_dir_test, dtype=torch.long).to(device)
+    # ==================== 转换为 Tensor（保留在 CPU） ====================
+    X_train_t = torch.tensor(X_train, dtype=torch.float32)          # CPU
+    X_test_t = torch.tensor(X_test, dtype=torch.float32)            # CPU
+    y_price_train_t = torch.tensor(y_price_train_scaled, dtype=torch.float32).reshape(-1, 1)  # CPU
+    y_price_test_t = torch.tensor(y_price_test_scaled, dtype=torch.float32).reshape(-1, 1)    # CPU
+    y_dir_train_t = torch.tensor(y_dir_train, dtype=torch.long)     # CPU
+    y_dir_test_t = torch.tensor(y_dir_test, dtype=torch.long)       # CPU
 
     print(f"✅ 训练样本: {len(X_train)}, 测试样本: {len(X_test)}")
 
-    train_dataset = TensorDataset(X_train_t, y_price_train_t, y_dir_train_t)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    # ==================== 创建 DataLoader（数据保持在 CPU，训练时再转移） ====================
+    from torch.utils.data import TensorDataset, DataLoader
 
+    train_dataset = TensorDataset(X_train_t, y_price_train_t, y_dir_train_t)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
+                              pin_memory=True, num_workers=2)    # pin_memory 有效加速 CPU->GPU 传输
+
+    test_dataset = TensorDataset(X_test_t, y_price_test_t, y_dir_test_t)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False,
+                             pin_memory=True, num_workers=2)
+
+    # ==================== 模型 ====================
     model = DualLSTM(
         input_size=len(FEATURE_COLS),
         hidden_size=64,
@@ -614,6 +649,14 @@ def train_and_save_model(stock_code=None, df=None, batch_size=1024, epochs=100):
     criterion_reg = nn.MSELoss()
     criterion_cls = nn.CrossEntropyLoss()
 
+    # 混合精度（仅当 CUDA 可用时启用）
+    from torch.amp import autocast, GradScaler
+    if torch.cuda.is_available():
+        scaler = GradScaler('cuda')
+    else:
+        scaler = None
+
+    # ==================== 训练循环 ====================
     print("🚀 开始训练...")
     best_loss = float('inf')
     patience = 15
@@ -623,21 +666,59 @@ def train_and_save_model(stock_code=None, df=None, batch_size=1024, epochs=100):
     for epoch in range(epochs):
         model.train()
         total_loss = 0.0
-        for batch_X, batch_y_price, batch_y_dir in train_loader:
-            price_pred, dir_pred = model(batch_X)
-            loss_reg = criterion_reg(price_pred, batch_y_price)
-            loss_cls = criterion_cls(dir_pred, batch_y_dir)
-            loss = loss_reg + loss_cls
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-        avg_train_loss = total_loss / len(train_loader)
-        model.eval()
-        with torch.no_grad():
-            val_price_pred, _ = model(X_test_t)
-            val_loss = criterion_reg(val_price_pred, y_price_test_t).item()
 
+        for batch_X, batch_y_price, batch_y_dir in train_loader:
+            # 将数据移至设备
+            batch_X = batch_X.to(device)
+            batch_y_price = batch_y_price.to(device)
+            batch_y_dir = batch_y_dir.to(device)
+
+            optimizer.zero_grad()
+
+            if scaler is not None:
+                with autocast('cuda'):
+                    price_pred, dir_pred = model(batch_X)
+                    loss_reg = criterion_reg(price_pred, batch_y_price)
+                    loss_cls = criterion_cls(dir_pred, batch_y_dir)
+                    loss = loss_reg + loss_cls
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                price_pred, dir_pred = model(batch_X)
+                loss_reg = criterion_reg(price_pred, batch_y_price)
+                loss_cls = criterion_cls(dir_pred, batch_y_dir)
+                loss = loss_reg + loss_cls
+                loss.backward()
+                optimizer.step()
+
+            total_loss += loss.item()
+
+        avg_train_loss = total_loss / len(train_loader)
+
+        # ==================== 验证（分批进行） ====================
+        model.eval()
+        val_loss_total = 0.0
+        val_steps = 0
+
+        with torch.no_grad():
+            for batch_X, batch_y_price, _ in test_loader:
+                batch_X = batch_X.to(device)
+                batch_y_price = batch_y_price.to(device)
+                if scaler is not None:
+                    with autocast('cuda'):
+                        val_price_pred, _ = model(batch_X)
+                        val_loss_reg = criterion_reg(val_price_pred, batch_y_price)
+                else:
+                    val_price_pred, _ = model(batch_X)
+                    val_loss_reg = criterion_reg(val_price_pred, batch_y_price)
+
+                val_loss_total += val_loss_reg.item()
+                val_steps += 1
+
+        val_loss = val_loss_total / val_steps
+
+        # 早停
         if val_loss < best_loss:
             best_loss = val_loss
             patience_counter = 0
@@ -652,24 +733,40 @@ def train_and_save_model(stock_code=None, df=None, batch_size=1024, epochs=100):
             print(f"⏹️ 早停于 epoch {epoch+1}")
             break
 
+    # 加载最佳模型
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
 
+    # ==================== 最终评估 MAE ====================
     model.eval()
-    with torch.no_grad():
-        pred_price_scaled, _ = model(X_test_t)
-        pred_price_real = scaler_y.inverse_transform(pred_price_scaled.cpu().numpy())
-        mae = np.mean(np.abs(pred_price_real - y_price_test))
-        print(f"📈 测试集 MAE: {mae:.2f} 元")
+    mae_total = 0.0
+    mae_steps = 0
 
+    with torch.no_grad():
+        for batch_X, batch_y_price, _ in test_loader:
+            batch_X = batch_X.to(device)
+            batch_y_price = batch_y_price.to(device)
+            if scaler is not None:
+                with autocast('cuda'):
+                    pred_price_scaled, _ = model(batch_X)
+            else:
+                pred_price_scaled, _ = model(batch_X)
+
+            pred_price_real = scaler_y.inverse_transform(pred_price_scaled.cpu().numpy())
+            mae_total += np.mean(np.abs(pred_price_real - batch_y_price.cpu().numpy()))
+            mae_steps += 1
+
+    mae = mae_total / mae_steps
+    print(f"📈 测试集 MAE: {mae:.2f} 元")
+
+    # ==================== 保存模型 ====================
     torch.save(model.cpu().state_dict(), 'model.pth')
     joblib.dump(scaler_X, 'scaler_X.pkl')
     joblib.dump(scaler_y, 'scaler_y.pkl')
     print("✅ 模型和Scaler已保存")
 
-    model.to(device)
+    model.to(device)  # 移回原设备
     return model, scaler_X, scaler_y, df
-
 # =============================================
 # 回测函数（单股票）
 # =============================================
@@ -935,7 +1032,7 @@ def run_backtest_on_df(df, model, scaler_X, scaler_y, initial_capital=100000):
         df = clean_data(df)
     
     scaled_features = scaler_X.transform(df[FEATURE_COLS].values)
-    X, y_price, y_dir = create_sequences(scaled_features, df['Target_Price'].values, df['Target_Direction'].values)
+    X, y_price, y_dir = create_sequences(scaled_features, price_targets, dir_targets)
     if len(X) == 0:
         return None
     
