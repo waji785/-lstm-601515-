@@ -7,7 +7,18 @@ import akshare as ak
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
+import os
+import torch
+import warnings
 warnings.filterwarnings('ignore')
+
+# 设备检测
+if torch.cuda.is_available():
+    torch.cuda.set_device(0)
+    device = torch.device("cuda")
+    print(f"🚀 使用设备: {torch.cuda.get_device_name(0)}")
+else:
+    raise RuntimeError("❌ 未检测到可用的 CUDA 设备，请检查 NVIDIA 驱动和 PyTorch 安装")
 
 # ----- 直接从主程序导入核心函数和配置 -----
 from stock_full2 import (
@@ -22,85 +33,15 @@ from stock_full2 import (
 # =============================================
 # 配置
 # =============================================
-# =============================================
-# 批量回测系统配置参数
-# =============================================
-
-# 最大并行线程数（同时回测的股票数量）
-# 说明：控制同时运行的回测任务数，影响整体速度
-# 取值范围：1 ~ CPU核心数*2（推荐4~8）
-# 建议：
-#   - 本地数据已缓存时，可调高（8~16）加速I/O读取
-#   - 需要联网下载数据时，建议调低（2~4）避免被数据源限流
-#   - 显存较小（<4GB）时，调低以避免CUDA out of memory
-# 当前值：16（高性能模式，适合本地缓存充沛的场景,第一次运行建议修改为2）
-MAX_WORKERS = 16
-
-# 最大测试股票数量
-# 说明：限制批量回测的股票总数，用于快速测试或分批执行
-# 取值范围：
-#   - None：测试全部股票（全量模式）
-#   - 正整数：只测试前N只股票（测试模式）
-# 建议：
-#   - 首次运行建议设为 20~50 快速验证
-#   - 全量跑时设为 None
-# 当前值：None（全量模式）
-MAX_STOCKS_FULL = None
-
-# 白名单输出文件名
-# 说明：满足条件的股票会被保存到此CSV文件中
-# 格式：code, name, total_return, trade_count, max_drawdown, sharpe_ratio
+MAX_WORKERS = 2                     # 降低并发，避免被baostock限流
+MAX_STOCKS_FULL = None              # None表示全量
 WHITELIST_FILE = "whitelist.csv"
-
-# =============================================
-# 白名单筛选条件（进入白名单的股票必须同时满足以下条件）
-# =============================================
-
-# 最低总收益率阈值
-# 说明：策略在该股票上的累计收益率必须超过此比例
-# 取值范围：0.0 ~ 1.0（对应 0% ~ 100%）
-# 建议值：
-#   - 稳健策略：0.30~0.50
-#   - 激进策略：0.20~0.30
-#   - 熊市可适当降低，牛市可提高
-# 当前值：0.30（30%）
 WHITELIST_MIN_RETURN = 0.30
-
-# 最少交易次数
-# 说明：策略在该股票上必须至少交易N次才会被纳入白名单
-# 取值范围：正整数（一般建议 3~10）
-# 含义：交易次数太少（如1-2次）可能是运气，缺乏统计显著性
-# 当前值：3（最低要求，避免过滤掉低频但高收益的机会）
 WHITELIST_MIN_TRADES = 3
-
-# 最大可接受回撤
-# 说明：策略在该股票上的最大回撤必须小于此比例
-# 取值范围：0.0 ~ 1.0（对应 0% ~ 100%）
-# 含义：即使收益很高，如果回撤过大，风险太高，不适合稳健策略
-# 建议值：0.30~0.50（30%~50%回撤容忍度）
-# 当前值：0.52（52%，相对宽松，允许高波动股票进入）
 WHITELIST_MAX_DRAWDOWN = 0.52
 
-# =============================================
-# 单只股票重试配置
-# =============================================
-
-# 单只股票最大递归重试次数
-# 说明：当单只股票的数据获取、训练或回测失败时，最多重试几次
-# 取值范围：0 ~ 5（推荐2~3）
-# 含义：
-#   - 重试次数耗尽后，该股票被标记为"放弃"，不再继续尝试
-#   - 每次重试前会等待 RETRY_DELAY 秒
-# 当前值：3（平衡成功率与时间成本）
+# 重试配置（仅用于单只股票内部的递归重试）
 MAX_RETRIES_PER_STOCK = 3
-
-# 重试间隔（秒）
-# 说明：每次重试前等待的时间
-# 取值范围：1 ~ 60（推荐3~10）
-# 含义：
-#   - 给网络或服务器足够的恢复时间
-#   - 避免高频重试被数据源限流
-# 当前值：5（适中的等待时间）
 RETRY_DELAY = 5
 
 # =============================================
@@ -109,7 +50,7 @@ RETRY_DELAY = 5
 FAILED_STOCKS = []
 
 # =============================================
-# 获取股票列表
+# 获取股票列表（并过滤北交所）
 # =============================================
 def get_stock_list(retries=3):
     for attempt in range(retries):
@@ -118,6 +59,11 @@ def get_stock_list(retries=3):
             df = ak.stock_info_a_code_name()
             if df is not None and not df.empty:
                 print(f"✅ 获取到 {len(df)} 只股票")
+                # ----- 过滤北交所（920、430、830、870等开头） -----
+                beijing_prefixes = ('920', '430', '830', '870', '871', '872', '873', '874', '875', '876', '877', '878', '879')
+                before = len(df)
+                df = df[~df['code'].astype(str).str.startswith(beijing_prefixes)]
+                print(f"✅ 过滤北交所股票 {before - len(df)} 只，剩余 {len(df)} 只")
                 return df
         except Exception as e:
             print(f"⚠️ 第 {attempt+1} 次尝试失败: {e}")
@@ -129,22 +75,25 @@ def get_stock_list(retries=3):
         df = df[['代码', '名称']].copy()
         df.columns = ['code', 'name']
         print(f"✅ 获取到 {len(df)} 只股票（备选）")
+        # 同样过滤
+        beijing_prefixes = ('920', '430', '830', '870', '871', '872', '873', '874', '875', '876', '877', '878', '879')
+        before = len(df)
+        df = df[~df['code'].astype(str).str.startswith(beijing_prefixes)]
+        print(f"✅ 过滤北交所股票 {before - len(df)} 只，剩余 {len(df)} 只")
         return df
     except Exception as e:
         print(f"❌ 所有获取股票列表的方式均失败: {e}")
         return None
 
 # =============================================
-# 单只股票回测包装器（带递归重试，但只在本股票内部）
+# 单只股票回测包装器（带递归重试）
 # =============================================
 def backtest_single_stock_wrapper(stock_code, stock_name="", benchmark_df=None, retry_count=0):
     """
-    对单只股票执行回测，失败时自动递归重试
-    retry_count: 当前已重试次数
+    对单只股票执行回测，失败时递归重试，最多 MAX_RETRIES_PER_STOCK 次
     """
     global FAILED_STOCKS
     
-    # ----- 检查是否已达到最大重试次数 -----
     if retry_count >= MAX_RETRIES_PER_STOCK:
         result = {
             "code": stock_code,
@@ -282,10 +231,10 @@ def main():
     global FAILED_STOCKS
     
     print("="*60)
-    print("🚀 批量回测系统 (无集中重试，仅单股票递归重试)")
+    print("🚀 批量回测系统 (过滤北交所 + 增量缓存)")
     print("="*60)
     print(f"📌 配置: 线程数={MAX_WORKERS}, 测试上限={MAX_STOCKS_FULL or '全量'}")
-    print(f"📌 单股票递归重试: 最多 {MAX_RETRIES_PER_STOCK} 次, 间隔 {RETRY_DELAY} 秒")
+    print(f"📌 重试配置: 每只股票最多重试 {MAX_RETRIES_PER_STOCK} 次, 间隔 {RETRY_DELAY} 秒")
     
     # ========== 第一步：统一获取沪深300指数 ==========
     print("\n📊 正在获取沪深300指数数据（所有股票共用）...")
@@ -304,7 +253,7 @@ def main():
     if benchmark_df is None or benchmark_df.empty:
         print("⚠️ 沪深300指数数据获取失败，将跳过所有对比")
     
-    # 获取股票列表
+    # ========== 第二步：获取股票列表（已自动过滤北交所） ==========
     stock_df = get_stock_list()
     if stock_df is None or len(stock_df) == 0:
         if os.path.exists(WHITELIST_FILE):
@@ -318,12 +267,13 @@ def main():
         stock_df = stock_df.head(MAX_STOCKS_FULL)
         print(f"📌 仅测试前 {MAX_STOCKS_FULL} 只股票")
     
+    # ========== 第三步：确认开始 ==========
     confirm = input(f"\n是否开始回测 {len(stock_df)} 只股票？(y/n) ").strip().lower()
     if confirm != 'y':
         print("❌ 已取消")
         return
     
-    # 准备任务
+    # ========== 第四步：准备任务 ==========
     tasks = []
     for _, row in stock_df.iterrows():
         code = str(row['code']).replace('sh.', '').replace('sz.', '').strip()
@@ -335,14 +285,19 @@ def main():
     results = []
     start_time = time.time()
     
-    # ========== 第一轮：并行执行（单股票内部递归重试） ==========
-    print("\n🚀 开始回测（单股票内部最多重试 3 次）...")
+    # ========== 第五步：并行执行（内部含递归重试） ==========
+    print("\n🚀 开始回测（单股票内部最多重试 3 次，每200只暂停30秒冷却）...")
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_map = {}
-        for t in tasks:
+        for idx, t in enumerate(tasks):
             future = executor.submit(backtest_single_stock_wrapper, t['code'], t['name'], benchmark_df, 0)
             future_map[future] = t
-            time.sleep(random.uniform(0.3, 0.8))
+            # 任务提交间隔，避免同时过多
+            time.sleep(random.uniform(0.2, 0.5))
+            # 每提交200个任务暂停30秒，让baostock缓一缓
+            if (idx + 1) % 200 == 0:
+                print(f"⏳ 已提交 {idx+1} 个任务，暂停 30 秒冷却...")
+                time.sleep(30)
         
         for future in tqdm(as_completed(future_map), total=len(tasks), desc="回测进度"):
             res = future.result()
@@ -357,10 +312,9 @@ def main():
     elapsed = time.time() - start_time
     print(f"\n⏱️ 回测耗时: {elapsed//60:.0f}分 {elapsed%60:.0f}秒")
     
-    # ========== 不再进行集中重试 ==========
+    # ========== 第六步：最终统计 ==========
     print("\n✅ 回测完成，不再进行集中重试。")
     
-    # ========== 最终统计 ==========
     print(f"\n📊 最终失败股票数: {len(FAILED_STOCKS)}")
     if FAILED_STOCKS:
         print("失败股票列表（前10）:")
