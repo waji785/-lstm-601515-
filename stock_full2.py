@@ -555,6 +555,13 @@ def fetch_benchmark_data(start="2020-01-01", end=TODAY):
 # 训练函数
 # =============================================
 def train_and_save_model(stock_code=None, df=None, batch_size=2048, epochs=100, train_ratio=0.7):
+    # 如果模型结构参数发生变化，可以主动删除旧文件
+    # 这里简单起见，在开始训练前统一删除（生产环境需谨慎）
+    for f in ['model.pth', 'scaler_X.pkl', 'scaler_y.pkl']:
+        if os.path.exists(f):
+            os.remove(f)
+            print(f"🗑️ 已删除旧文件: {f}")
+    # ... 后续训练代码 ...
     """
     训练模型并保存
 
