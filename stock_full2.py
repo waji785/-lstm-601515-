@@ -649,13 +649,13 @@ def train_and_save_model(stock_code=None, df=None, batch_size=2048, epochs=100, 
     # ==================== 模型（增大容量） ====================
     model = DualLSTM(
         input_size=len(FEATURE_COLS),
-        hidden_size=256,
-        num_layers=3,
-        dropout=0.2
+        hidden_size=128,
+        num_layers=2,
+        dropout=0.3
     ).to(device)
 
     # ==================== 优化器 ====================
-    optimizer = optim.Adam(model.parameters(), lr=0.0005, weight_decay=1e-4)
+    optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-3)
     criterion_reg = nn.MSELoss()
     criterion_cls = nn.CrossEntropyLoss()
 
@@ -690,7 +690,7 @@ def train_and_save_model(stock_code=None, df=None, batch_size=2048, epochs=100, 
                     price_pred, dir_pred = model(batch_X)
                     loss_reg = criterion_reg(price_pred, batch_y_price)
                     loss_cls = criterion_cls(dir_pred, batch_y_dir)
-                    loss = 0.05 * loss_reg + loss_cls
+                    loss = 0.01 * loss_reg + loss_cls
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -700,7 +700,7 @@ def train_and_save_model(stock_code=None, df=None, batch_size=2048, epochs=100, 
                 price_pred, dir_pred = model(batch_X)
                 loss_reg = criterion_reg(price_pred, batch_y_price)
                 loss_cls = criterion_cls(dir_pred, batch_y_dir)
-                loss = 0.05 * loss_reg + loss_cls
+                loss = 0.01 * loss_reg + loss_cls
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()

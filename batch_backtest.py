@@ -30,7 +30,7 @@ from stock_full2 import (
 # 配置
 # =============================================
 MAX_WORKERS = 4                     # 并行线程数
-TRAIN_STOCKS = 100                  # 用于训练的股票数量（建议 200~1000）
+TRAIN_STOCKS = 6000                 # 用于训练的股票数量（建议 200~1000）
 TEST_STOCKS = None                  # None 表示测试全部，或设置数字如 100
 WHITELIST_FILE = "whitelist.csv"
 WHITELIST_MIN_RETURN = 0.50

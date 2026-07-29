@@ -1,9 +1,3 @@
-
----
-
-## 📄 更新后的 `.gitignore`（补充分析输出）
-
-```gitignore
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -148,42 +142,58 @@ cython_debug/
 *.swo
 *~
 
-# Project-specific - 模型和数据文件
+# =============================================
+# 项目特定忽略文件
+# =============================================
+
+# 模型文件（训练生成的权重和标准化器）
 model.pth
 scaler_X.pkl
 scaler_y.pkl
+
+# 数据缓存（大量历史行情数据）
 stock_data_cache/
-*.csv
-*.log
-backtest_result.png
+*.csv  # 如果所有CSV都是缓存结果，但注意不要忽略源代码中的CSV，建议明确路径
+# 如果你只将CSV保存在 stock_data_cache/ 中，上面的目录忽略已足够
+
+# 回测结果输出
 batch_results.csv
 whitelist.csv
-available_proxies.txt
+whitelist_extended.csv
+pool_backtest_results.csv
+pool_metrics.csv
+expanding_window_results.csv
 
-# Analysis output - 分析结果目录
+# 图表图片
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.svg
+
+# 分析输出目录
 analysis_output/
-model.pth
-scaler_y.pkl
-*.pkl
+
+# 临时文件
+*.tmp
+*.temp
+*.log
+
+# 代理配置文件（如有）
 available_proxies.txt
-available_proxies_20260726_093242.txt
-available_proxies.txt
-available_proxies.txt
-backtest_result.png
 fast_proxies.txt
-model.pth
 medium_proxies.txt
-model.pth
-batch_results.csv
-backtest_result.png
-available_proxies.txt
-available_proxies.txt
-backtest_result.png
-batch_results.csv
-model.pth
-scaler_X.pkl
-scaler_y.pkl
-backtest_result.png
+
+# 压缩文件（如有手动下载的数据）
+*.zip
+*.tar.gz
+*.tgz
+*.rar
+
+# 操作系统生成文件
+Thumbs.db
+.DS_Store
+
 66ip.py
 ai.py
 test.py
