@@ -49,7 +49,7 @@ plt.rcParams['axes.unicode_minus'] = False
 # 获取当前日期
 # =============================================
 TODAY = datetime.datetime.now().strftime("%Y-%m-%d")
-print(f"📅 数据截止日期: {TODAY}")
+# print(f"📅 数据截止日期: {TODAY}")
 
 # =============================================
 # 全局策略参数
@@ -87,7 +87,7 @@ FEATURE_COLS = [
 # 模型定义
 # =============================================
 class DualLSTM(nn.Module):
-    def __init__(self, input_size=None, hidden_size=64, num_layers=2, dropout=0.2):
+    def __init__(self, input_size=None, hidden_size=128, num_layers=2, dropout=0.2):
         super().__init__()
         if input_size is None:
             input_size = len(FEATURE_COLS)
@@ -310,7 +310,7 @@ def run_trend_backtest(df, model, scaler_X, scaler_y, initial_capital=100000):
             # ----- 4. 开仓信号（趋势 + 概率 + 波动）-----
             if holdings == 0 and allow_long and up_prob > BUY_THRESHOLD and vol_factor > 0.3:
                 # 动态仓位：概率越高仓位越重，且受波动率限制
-                position_ratio = min((up_prob - 0.45) * 3, MAX_POSITION) * vol_factor
+                position_ratio = min((up_prob - 0.45) * 2, MAX_POSITION) * vol_factor
                 position_ratio = max(position_ratio, 0.1)  # 最低10%仓位
                 buy_amount = capital * position_ratio
                 holdings = buy_amount / current_price
@@ -598,6 +598,9 @@ def train_and_save_model(stock_code=None, df=None, batch_size=1024, epochs=100, 
     # ==================== 特征标准化 ====================
     scaler_X = StandardScaler()
     scaled_features = scaler_X.fit_transform(df[FEATURE_COLS].values)
+    print(f"🔍 标准化检查:")
+    print(f"  特征均值范围: {scaled_features.mean(axis=0).min():.4f} ~ {scaled_features.mean(axis=0).max():.4f}")  # 应接近 0
+    print(f"  特征标准差范围: {scaled_features.std(axis=0).min():.4f} ~ {scaled_features.std(axis=0).max():.4f}")  # 应接近 1
     price_targets = df['Target_Price'].values
     dir_targets = df['Target_Direction'].values
 
@@ -628,24 +631,35 @@ def train_and_save_model(stock_code=None, df=None, batch_size=1024, epochs=100, 
 
     # ==================== 创建 DataLoader（数据保持在 CPU，训练时再转移） ====================
     from torch.utils.data import TensorDataset, DataLoader
-
     train_dataset = TensorDataset(X_train_t, y_price_train_t, y_dir_train_t)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
-                              pin_memory=True, num_workers=2)    # pin_memory 有效加速 CPU->GPU 传输
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=batch_size, 
+        shuffle=True,
+        pin_memory=True, 
+        num_workers=4,      # 增加到 4 个进程
+        prefetch_factor=2   # 每个 worker 预加载 2 个 batch
+    )
 
     test_dataset = TensorDataset(X_test_t, y_price_test_t, y_dir_test_t)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False,
-                             pin_memory=True, num_workers=2)
+    test_loader = DataLoader(
+        test_dataset, 
+        batch_size=batch_size, 
+        shuffle=False,
+        pin_memory=True, 
+        num_workers=4,
+        prefetch_factor=2
+    )
 
     # ==================== 模型 ====================
     model = DualLSTM(
         input_size=len(FEATURE_COLS),
-        hidden_size=64,
-        num_layers=2,
+        hidden_size=256,   # 增大 hidden_size
+        num_layers=3,      # 增加层数
         dropout=0.2
     ).to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+    optimizer = optim.Adam(model.parameters(), lr=0.0005, weight_decay=1e-4)
     criterion_reg = nn.MSELoss()
     criterion_cls = nn.CrossEntropyLoss()
 
@@ -675,24 +689,25 @@ def train_and_save_model(stock_code=None, df=None, batch_size=1024, epochs=100, 
 
             optimizer.zero_grad()
 
-            if scaler is not None:
-                with autocast('cuda'):
-                    price_pred, dir_pred = model(batch_X)
-                    loss_reg = criterion_reg(price_pred, batch_y_price)
-                    loss_cls = criterion_cls(dir_pred, batch_y_dir)
-                    loss = loss_reg + loss_cls
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
+        if scaler is not None:
+            with autocast('cuda'):
                 price_pred, dir_pred = model(batch_X)
                 loss_reg = criterion_reg(price_pred, batch_y_price)
                 loss_cls = criterion_cls(dir_pred, batch_y_dir)
-                loss = loss_reg + loss_cls
-                loss.backward()
-                optimizer.step()
-
-            total_loss += loss.item()
+                loss = 0.1 * loss_reg + loss_cls
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)  # 必须先 unscale
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            price_pred, dir_pred = model(batch_X)
+            loss_reg = criterion_reg(price_pred, batch_y_price)
+            loss_cls = criterion_cls(dir_pred, batch_y_dir)
+            loss = loss_reg + loss_cls
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
 
         avg_train_loss = total_loss / len(train_loader)
 

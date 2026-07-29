@@ -11,6 +11,10 @@ import torch
 import joblib
 warnings.filterwarnings('ignore')
 
+for f in ['model.pth', 'scaler_X.pkl', 'scaler_y.pkl']:
+    if os.path.exists(f):
+        os.remove(f)
+        print(f"🗑️ 已删除旧文件: {f}")
 # ----- 导入核心函数 -----
 from stock_full2 import (
     FEATURE_COLS,
@@ -26,12 +30,12 @@ from stock_full2 import (
 # 配置
 # =============================================
 MAX_WORKERS = 4                     # 并行线程数
-TRAIN_STOCKS = 1000                  # 用于训练的股票数量（建议 200~1000）
+TRAIN_STOCKS = 5000                  # 用于训练的股票数量（建议 200~1000）
 TEST_STOCKS = None                  # None 表示测试全部，或设置数字如 100
 WHITELIST_FILE = "whitelist.csv"
-WHITELIST_MIN_RETURN = 0.30
-WHITELIST_MIN_TRADES = 3
-WHITELIST_MAX_DRAWDOWN = 0.52
+WHITELIST_MIN_RETURN = 0.50
+WHITELIST_MIN_TRADES = 5
+WHITELIST_MAX_DRAWDOWN = 0.40
 
 # 随机种子（固定以确保可复现）
 SEED = 42
@@ -143,8 +147,8 @@ def generate_whitelist(result_df):
     
     whitelist = success_df[
         (success_df["total_return"] > WHITELIST_MIN_RETURN) &
-        (success_df["trade_count"] >= WHILTELIST_MIN_TRADES) &
-        (success_df["max_drawdown"] < WHILTELIST_MAX_DRAWDOWN)
+        (success_df["trade_count"] >= WHITELIST_MIN_TRADES) &
+        (success_df["max_drawdown"] < WHITELIST_MAX_DRAWDOWN)
     ].sort_values("total_return", ascending=False)
     
     if len(whitelist) == 0:
