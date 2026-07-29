@@ -99,51 +99,49 @@
 1. 安装依赖
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-2. 单只股票回测
-python stock_full2.py
-程序会交互式询问股票代码，自动完成：
-数据获取（baostock，支持重试）
-特征构造（40+ 技术指标）
-LSTM 训练（50 轮）
-策略回测（含止盈止损）
-生成资金曲线图（含沪深300对比）
+2. 数据准备
+# 首次运行会自动下载数据并缓存到 stock_data_cache/
 
-3. 批量回测与白名单生成
+3. 全市模型训练 + 白名单生成
 python batch_backtest.py
 程序会：
-统一获取沪深300指数数据（所有股票共用）
-并行回测指定数量的股票
-自动重试失败股票（最多3次）
-生成 batch_results.csv 和 whitelist.csv
-💡 你可以在 batch_backtest.py 顶部修改 MAX_STOCKS_FULL 控制测试数量，首次建议设为 20 快速验证。
+加载全市场股票数据，训练统一 LSTM 模型
+用该模型回测所有股票，生成 whitelist.csv
 
-4. 回测结果深度分析
-python analyze_results.py
-程序会：
-收益率分布直方图
-收益 vs 回撤散点图
-交易次数分布图
-夏普比率分组箱线图
-统计摘要报告（CSV）
+4. 白名单扩展（时间分割验证）
+python expand_whitelist.py
+对候选股票进行前70%训练，后30%回测的时间分割验证，生成 whitelist_extended.csv（精选30只）。
+
+5. 组合回测与绩效分析
+python pool_backtest_analysis.py
+输出：
+组合总收益率、正收益股票数、夏普比率
+资金曲线图（vs 沪深300）
+收益率分布图
 
 🔧 策略参数调优
-你可以在 stock_full2.py 顶部自由调整核心参数：
-BUY_THRESHOLD = 0.52      # 上涨概率高于此值买入
-SELL_THRESHOLD = 0.48     # 上涨概率低于此值卖出
-STOP_LOSS = -0.10         # 亏损 10% 时强制止损
-TAKE_PROFIT = 0.30        # 盈利 30% 时强制止盈
-白名单筛选参数（在 batch_backtest.py 中）：
-WHITELIST_MIN_RETURN = 0.30    # 最低收益率（30%）
-WHITELIST_MIN_TRADES = 3       # 最少交易次数（3次）
-WHITELIST_MAX_DRAWDOWN = 0.50  # 最大可接受回撤（50%）
+在 stock_full2.py 中可调整的核心参数：
+python
+BUY_THRESHOLD = 0.45      # 上涨概率 > 0.45 买入
+SELL_THRESHOLD = 0.43     # 上涨概率 < 0.43 卖出
+STOP_LOSS = -0.08         # 亏损 8% 止损
+TAKE_PROFIT = 0.20        # 盈利 20% 止盈
+MAX_POSITION = 0.8        # 最大仓位 80%
+白名单筛选条件（batch_backtest.py）：
+python
+WHITELIST_MIN_RETURN = 0.30    # 最低收益率 30%
+WHITELIST_MIN_TRADES = 3       # 最少交易次数 3
+WHITELIST_MAX_DRAWDOWN = 0.52  # 最大回撤 52%
+
 
 📊 结果可视化
-运行结束后自动生成：
-资金曲线对比图 (backtest_result.png)：策略 vs 沪深300
-交易明细（终端打印）
-最大回撤 / 夏普比率 / 超额收益（终端打印）
+运行 pool_backtest_analysis.py 后自动生成：
+组合资金曲线图 (pool_capital_curve.png)：策略 vs 沪深300
+收益率分布图 (return_distribution.png)：30只白名单股票的收益分布
+绩效指标表 (pool_metrics.csv)：总收益、年化收益、夏普比率、最大回撤
 
-
+📧 联系与交流
+如有问题或建议，欢迎通过 GitHub Issues 交流。
 
 
 **⚠️ 免责声明：本项目仅供量化研究与学习使用，不构成任何投资建议。实盘交易需谨慎，风险自负。**
