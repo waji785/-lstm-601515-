@@ -170,6 +170,7 @@ expanding_window_results.csv
 *.jpeg
 *.pdf
 *.svg
+!pool_capital_curve.png
 
 # 分析输出目录
 analysis_output/
