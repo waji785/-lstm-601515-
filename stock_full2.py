@@ -555,13 +555,6 @@ def fetch_benchmark_data(start="2020-01-01", end=TODAY):
 # 训练函数
 # =============================================
 def train_and_save_model(stock_code=None, df=None, batch_size=2048, epochs=100, train_ratio=0.7):
-    # 如果模型结构参数发生变化，可以主动删除旧文件
-    # 这里简单起见，在开始训练前统一删除（生产环境需谨慎）
-    for f in ['model.pth', 'scaler_X.pkl', 'scaler_y.pkl']:
-        if os.path.exists(f):
-            os.remove(f)
-            print(f"🗑️ 已删除旧文件: {f}")
-    # ... 后续训练代码 ...
     """
     训练模型并保存
 
@@ -656,12 +649,12 @@ def train_and_save_model(stock_code=None, df=None, batch_size=2048, epochs=100, 
     # ==================== 模型（增大容量） ====================
     model = DualLSTM(
         input_size=len(FEATURE_COLS),
-        hidden_size=256,   # 增大 hidden_size
-        num_layers=3,      # 增加层数
+        hidden_size=256,
+        num_layers=3,
         dropout=0.2
     ).to(device)
 
-    # ==================== 优化器（降低学习率） ====================
+    # ==================== 优化器 ====================
     optimizer = optim.Adam(model.parameters(), lr=0.0005, weight_decay=1e-4)
     criterion_reg = nn.MSELoss()
     criterion_cls = nn.CrossEntropyLoss()
@@ -697,7 +690,7 @@ def train_and_save_model(stock_code=None, df=None, batch_size=2048, epochs=100, 
                     price_pred, dir_pred = model(batch_X)
                     loss_reg = criterion_reg(price_pred, batch_y_price)
                     loss_cls = criterion_cls(dir_pred, batch_y_dir)
-                    loss = 0.05 * loss_reg + loss_cls  # 回归损失权重降低
+                    loss = 0.05 * loss_reg + loss_cls
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -720,37 +713,51 @@ def train_and_save_model(stock_code=None, df=None, batch_size=2048, epochs=100, 
         avg_loss_reg = total_loss_reg / len(train_loader)
         avg_loss_cls = total_loss_cls / len(train_loader)
 
-        # ==================== 验证 ====================
+        # ==================== 验证（同时计算回归和分类损失） ====================
         model.eval()
         val_loss_total = 0.0
+        val_loss_reg_total = 0.0
+        val_loss_cls_total = 0.0
         val_steps = 0
+
         with torch.no_grad():
-            for batch_X, batch_y_price, _ in test_loader:
+            for batch_X, batch_y_price, batch_y_dir in test_loader:
                 batch_X = batch_X.to(device)
                 batch_y_price = batch_y_price.to(device)
+                batch_y_dir = batch_y_dir.to(device)
+
                 if scaler is not None:
                     with autocast('cuda'):
-                        val_price_pred, _ = model(batch_X)
+                        val_price_pred, val_dir_pred = model(batch_X)
                         val_loss_reg = criterion_reg(val_price_pred, batch_y_price)
+                        val_loss_cls = criterion_cls(val_dir_pred, batch_y_dir)
                 else:
-                    val_price_pred, _ = model(batch_X)
+                    val_price_pred, val_dir_pred = model(batch_X)
                     val_loss_reg = criterion_reg(val_price_pred, batch_y_price)
-                val_loss_total += val_loss_reg.item()
+                    val_loss_cls = criterion_cls(val_dir_pred, batch_y_dir)
+
+                # 总验证损失（与训练损失权重一致）
+                val_loss = 0.05 * val_loss_reg + val_loss_cls
+                val_loss_total += val_loss.item()
+                val_loss_reg_total += val_loss_reg.item()
+                val_loss_cls_total += val_loss_cls.item()
                 val_steps += 1
 
-        val_loss = val_loss_total / val_steps
+        avg_val_loss = val_loss_total / val_steps
+        avg_val_loss_reg = val_loss_reg_total / val_steps
+        avg_val_loss_cls = val_loss_cls_total / val_steps
 
-        # ==================== 早停 ====================
-        if val_loss < best_loss:
-            best_loss = val_loss
+        # ==================== 早停（基于总验证损失） ====================
+        if avg_val_loss < best_loss:
+            best_loss = avg_val_loss
             patience_counter = 0
             best_model_state = model.state_dict().copy()
         else:
             patience_counter += 1
 
-        # ==================== 打印（每10轮显示回归+分类损失） ====================
+        # ==================== 打印 ====================
         if (epoch + 1) % 10 == 0:
-            print(f"轮次 [{epoch+1}/{epochs}] | 训练损失: {avg_train_loss:.4f} (reg: {avg_loss_reg:.4f}, cls: {avg_loss_cls:.4f}) | 验证损失: {val_loss:.4f}")
+            print(f"轮次 [{epoch+1}/{epochs}] | 训练损失: {avg_train_loss:.4f} (reg: {avg_loss_reg:.4f}, cls: {avg_loss_cls:.4f}) | 验证损失: {avg_val_loss:.4f} (reg: {avg_val_loss_reg:.4f}, cls: {avg_val_loss_cls:.4f})")
 
         if patience_counter >= patience:
             print(f"⏹️ 早停于 epoch {epoch+1}")
