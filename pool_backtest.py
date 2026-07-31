@@ -299,8 +299,8 @@ def main():
     # ---- 新增：应用回撤控制 ----
     combined_capital_controlled = apply_drawdown_control(
         combined_capital, 
-        drawdown_threshold=0.04,  # 5% 回撤触发降仓
-        recovery_ratio=0.4        # 回撤恢复到 2.5% 时恢复
+        drawdown_threshold=0.035,  # 5% 回撤触发降仓
+        recovery_ratio=0.35        # 回撤恢复到 2.5% 时恢复
     )
     
     # 计算原始绩效
