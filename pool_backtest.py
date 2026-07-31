@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-组合回测与绩效分析系统
+组合回测与绩效分析系统（含回撤触发降仓）
 用法: python pool_backtest_analysis.py
 """
 
@@ -38,7 +38,6 @@ def load_unified_model(model_path="model.pth",
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # 与保存的模型结构一致：hidden_size=64, num_layers=2
     model = DualLSTM(
         input_size=len(FEATURE_COLS),
         hidden_size=64,
@@ -56,14 +55,14 @@ def load_unified_model(model_path="model.pth",
     return model, scaler_X, scaler_y
 
 # =============================================
-# 2. 组合回测（复用全市模型）
+# 2. 组合回测（复用全市模型，等权重）
 # =============================================
 def run_pool_backtest(whitelist_file="whitelist_extended.csv", 
                       max_stocks=None, 
                       initial_capital=100000):
     """
     对白名单中的股票使用全市模型进行组合回测（等权重）
-    返回: 组合资金曲线, 各股票收益率列表, 成功股票信息
+    返回组合资金曲线、各股票收益率列表、成功股票信息
     """
     print("="*60)
     print("🚀 组合回测系统（复用全市模型）")
@@ -120,7 +119,7 @@ def run_pool_backtest(whitelist_file="whitelist_extended.csv",
         print("❌ 没有成功回测的股票")
         return None, None, None
     
-    # 4. 组合收益计算（等权重）
+    # 4. 组合构建（等权重）
     min_len = min(len(curve) for curve in capital_curves)
     n_stocks = len(capital_curves)
     combined_capital = np.zeros(min_len)
@@ -152,36 +151,80 @@ def run_pool_backtest(whitelist_file="whitelist_extended.csv",
     return combined_capital, result_df, df_whitelist
 
 # =============================================
-# 3. 绩效指标计算
+# 3. 回撤触发降仓函数（核心新增）
+# =============================================
+
+def apply_drawdown_control(combined_capital, drawdown_threshold=0.05, recovery_ratio=0.5):
+    """
+    回撤控制：当组合回撤超过 drawdown_threshold 时，将仓位降低到 50%
+    当回撤恢复到阈值的一半时，恢复满仓
+
+    参数:
+        combined_capital: 原始组合资金曲线（numpy数组）
+        drawdown_threshold: 触发降仓的回撤阈值（如 0.05 表示 5%）
+        recovery_ratio: 恢复阈值比例（回撤降到 threshold * recovery_ratio 时恢复）
+    """
+    controlled = np.zeros_like(combined_capital)
+    controlled[0] = combined_capital[0]
+    in_drawdown = False
+    peak = combined_capital[0]
+    capital_locked = combined_capital[0]  # 降仓时锁定的资金
+    
+    print(f"\n🛡️ 应用回撤控制: 阈值={drawdown_threshold*100:.1f}%, 恢复比例={recovery_ratio*100:.0f}%")
+    
+    for i in range(1, len(combined_capital)):
+        # 更新峰值
+        if combined_capital[i] > peak:
+            peak = combined_capital[i]
+        
+        # 计算当前回撤
+        current_drawdown = (peak - combined_capital[i]) / peak
+        
+        # 判断是否触发降仓
+        if not in_drawdown:
+            if current_drawdown > drawdown_threshold:
+                in_drawdown = True
+                capital_locked = controlled[i-1]  # 锁住当前资金
+                print(f"  ⚠️ 触发降仓于 {i} 交易日，回撤 {current_drawdown*100:.2f}%")
+        else:
+            # 检查是否恢复（回撤降到阈值的一半）
+            if current_drawdown < drawdown_threshold * recovery_ratio:
+                in_drawdown = False
+                print(f"  ✅ 恢复满仓于 {i} 交易日，回撤 {current_drawdown*100:.2f}%")
+        
+        # 更新资金曲线
+        if in_drawdown:
+            controlled[i] = capital_locked  # 保持锁定的资金（不随市场波动）
+        else:
+            controlled[i] = combined_capital[i]  # 跟随原始曲线
+    
+    return controlled
+
+# =============================================
+# 4. 绩效指标计算
 # =============================================
 def compute_metrics(capital_series, risk_free_rate=0.025, trading_days=252):
     """
     计算组合绩效指标
     capital_series: 资金曲线（numpy数组）
     """
-    # 日收益率
     daily_ret = np.diff(capital_series) / capital_series[:-1]
     
-    # 总收益率
     total_return = (capital_series[-1] - capital_series[0]) / capital_series[0]
     
-    # 年化收益率
     n_days = len(capital_series)
     annual_return = (1 + total_return) ** (trading_days / n_days) - 1
     
-    # 最大回撤
     peak = np.maximum.accumulate(capital_series)
     drawdown = (peak - capital_series) / peak
     max_drawdown = np.max(drawdown)
     
-    # 夏普比率
     excess_ret = daily_ret - risk_free_rate / trading_days
     if np.std(excess_ret) != 0:
         sharpe = np.sqrt(trading_days) * np.mean(excess_ret) / np.std(excess_ret)
     else:
         sharpe = 0
     
-    # 胜率（日级别）
     win_days = np.sum(daily_ret > 0)
     total_days = len(daily_ret)
     win_rate = win_days / total_days if total_days > 0 else 0
@@ -196,7 +239,7 @@ def compute_metrics(capital_series, risk_free_rate=0.025, trading_days=252):
     }
 
 # =============================================
-# 4. 获取沪深300基准（可选）
+# 5. 获取沪深300基准（可选）
 # =============================================
 def get_benchmark_curve(start_date=None, end_date=None):
     """
@@ -206,7 +249,6 @@ def get_benchmark_curve(start_date=None, end_date=None):
     if df is None or df.empty:
         print("⚠️ 无法获取沪深300数据，将跳过基准对比")
         return None
-    # 如果提供了起止日期，截取相应区间
     if start_date is not None:
         df = df[df['Date'] >= start_date]
     if end_date is not None:
@@ -214,7 +256,7 @@ def get_benchmark_curve(start_date=None, end_date=None):
     return df['Close'].values
 
 # =============================================
-# 5. 绘图
+# 6. 绘图
 # =============================================
 def plot_pool_performance(combined_capital, benchmark_curve=None, 
                           title="组合资金曲线", save_path="pool_capital_curve.png"):
@@ -223,14 +265,11 @@ def plot_pool_performance(combined_capital, benchmark_curve=None,
     """
     plt.figure(figsize=(12, 6))
     
-    # 组合资金曲线（归一化到100000）
     init_cap = combined_capital[0]
     normalized = combined_capital / init_cap * 100000
     plt.plot(normalized, label='组合策略', linewidth=2)
     
-    # 如果有基准，绘制基准曲线（归一化）
     if benchmark_curve is not None:
-        # 对齐长度（取较短者）
         min_len = min(len(normalized), len(benchmark_curve))
         bench_normalized = benchmark_curve[:min_len] / benchmark_curve[0] * 100000
         plt.plot(bench_normalized, label='沪深300（买入持有）', linestyle='--', alpha=0.7)
@@ -245,44 +284,51 @@ def plot_pool_performance(combined_capital, benchmark_curve=None,
     print(f"📊 资金曲线图已保存至 {save_path}")
 
 # =============================================
-# 6. 主程序
+# 7. 主程序
 # =============================================
 def main():
-    # 运行组合回测
-    combined_capital, result_df, whitelist_df = run_pool_backtest(max_stocks=30)
+    # 运行组合回测（等权重）
+    combined_capital, result_df, whitelist_df = run_pool_backtest(
+        max_stocks=30
+    )
     
     if combined_capital is None:
         print("❌ 组合回测失败")
         return
     
-    # 计算绩效指标
-    metrics = compute_metrics(combined_capital)
+    # ---- 新增：应用回撤控制 ----
+    combined_capital_controlled = apply_drawdown_control(
+        combined_capital, 
+        drawdown_threshold=0.04,  # 5% 回撤触发降仓
+        recovery_ratio=0.4        # 回撤恢复到 2.5% 时恢复
+    )
+    
+    # 计算原始绩效
+    metrics_original = compute_metrics(combined_capital)
+    
+    # 计算控制后绩效
+    metrics_controlled = compute_metrics(combined_capital_controlled)
     
     print("\n" + "="*60)
-    print("📈 组合绩效指标")
+    print("📈 绩效对比（原始 vs 回撤控制）")
     print("="*60)
-    print(f"  回测区间（交易日）: {metrics['n_days']}")
-    print(f"  总收益率:           {metrics['total_return']*100:.2f}%")
-    print(f"  年化收益率:         {metrics['annual_return']*100:.2f}%")
-    print(f"  最大回撤:           {metrics['max_drawdown']*100:.2f}%")
-    print(f"  夏普比率（年化）:   {metrics['sharpe_ratio']:.3f}")
-    print(f"  日胜率:             {metrics['win_rate']*100:.2f}%")
+    print(f"  总收益率:      {metrics_original['total_return']*100:.2f}%  →  {metrics_controlled['total_return']*100:.2f}%")
+    print(f"  年化收益率:    {metrics_original['annual_return']*100:.2f}%  →  {metrics_controlled['annual_return']*100:.2f}%")
+    print(f"  最大回撤:      {metrics_original['max_drawdown']*100:.2f}%  →  {metrics_controlled['max_drawdown']*100:.2f}%")
+    print(f"  夏普比率:      {metrics_original['sharpe_ratio']:.3f}  →  {metrics_controlled['sharpe_ratio']:.3f}")
     print("="*60)
     
-    # 保存绩效指标到CSV
-    metrics_df = pd.DataFrame([metrics])
+    # 保存绩效指标
+    metrics_df = pd.DataFrame([metrics_controlled])
     metrics_df.to_csv("pool_metrics.csv", index=False, encoding='utf-8-sig')
     print("💾 绩效指标已保存至 pool_metrics.csv")
     
-    # 获取沪深300基准（可选）
-    # 注意：资金曲线长度为538个交易日，需要截取对应区间
-    # 由于资金曲线是从各股票回测拼接而来，日期难以对齐，这里简单演示
-    # 更精确的做法是在回测时记录日期，此处仅作示意
+    # 获取沪深300基准
     benchmark = get_benchmark_curve()
     
-    # 绘制资金曲线
-    plot_pool_performance(combined_capital, benchmark, 
-                          title=f"组合策略 vs 沪深300 (30只股票等权重)",
+    # 绘制控制后的资金曲线
+    plot_pool_performance(combined_capital_controlled, benchmark, 
+                          title=f"组合策略 vs 沪深300 (回撤控制)",
                           save_path="pool_capital_curve.png")
     
     # 额外绘制收益率分布

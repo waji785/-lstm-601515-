@@ -58,7 +58,7 @@ BUY_THRESHOLD = 0.45
 SELL_THRESHOLD = 0.43
 STOP_LOSS = -0.08
 TAKE_PROFIT = 0.2
-MAX_POSITION = 0.8  # 最大仓位
+MAX_POSITION = 0.3  # 最大仓位
 
 # =============================================
 # 数据缓存配置
@@ -213,7 +213,7 @@ def load_all_stock_data(cache_dir="stock_data_cache", max_stocks=None, min_days=
     return combined
 def run_trend_backtest(df, model, scaler_X, scaler_y, initial_capital=100000):
     """
-    趋势跟踪回测（含趋势过滤器 + 动态仓位）
+    趋势跟踪回测（初版优化版 - 柔性仓位）
     """
     if df is None or len(df) < 21:
         return None
@@ -234,23 +234,25 @@ def run_trend_backtest(df, model, scaler_X, scaler_y, initial_capital=100000):
     dates = df['Date'].values[20:]
     close_prices = df['Close'].values[20:]
     
-    # ----- 计算技术指标（用于趋势过滤）-----
-    ma_50 = df['Close'].rolling(50).mean().values[20:]   # 50日均线
-    ma_200 = df['Close'].rolling(200).mean().values[20:] # 200日均线
-    atr = df['High'].rolling(14).max() - df['Low'].rolling(14).min()
-    atr = atr.values[20:] / df['Close'].values[20:] * 100  # ATR百分比
+    ma_200 = df['Close'].rolling(200).mean().values[20:]
+    atr = (df['High'].rolling(14).max() - df['Low'].rolling(14).min()).values[20:] / df['Close'].values[20:] * 100
     
-    # ----- 策略参数 -----
-    TREND_THRESHOLD = 0.02  # 趋势强度阈值（价格相对MA200的偏离）
-    MIN_VOLATILITY = 0.5    # 最低波动率（ATR% > 0.5% 才交易）
-    MAX_POSITION = 0.8      # 最大仓位 80%
+    # ----- 策略参数（回到初版，只做柔性调整）-----
+    MAX_POSITION = 0.6          # 单只股票最大仓位 60%
+    MIN_VOLATILITY = 0.6        # 波动率阈值
+    BUY_THRESHOLD = 0.45        # 买入阈值（与初版一致）
+    STOP_LOSS = -0.08           # 止损 -8%
+    TAKE_PROFIT = 0.20          # 止盈 20%
     
     positions = []
     capital = float(initial_capital)
     holdings = 0.0
     entry_price = 0.0
+    entry_idx = 0
     trade_log = []
     up_probs = []
+    signal_counter = 0
+    MIN_CONSECUTIVE_SIGNALS = 3
     
     with torch.no_grad():
         for i in range(len(X_tensor)):
@@ -261,26 +263,22 @@ def run_trend_backtest(df, model, scaler_X, scaler_y, initial_capital=100000):
             up_prob = prob[1]
             up_probs.append(up_prob)
             
-            # ----- 1. 趋势过滤器（决定是否允许开仓）-----
-            # 价格相对200日均线的偏离
+            # 趋势过滤（与初版一致）
             price_ma200_ratio = (current_price - ma_200[i]) / ma_200[i] if ma_200[i] > 0 else 0
-            # 短期均线方向
             ma_5 = df['Close'].rolling(5).mean().values[20+i] if i+20 < len(df) else 0
             ma_20 = df['Close'].rolling(20).mean().values[20+i] if i+20 < len(df) else 0
-            trend_up = ma_5 > ma_20  # 短期均线上穿中期均线
-            
-            # 只有满足以下条件才允许开多仓：
-            # (1) 价格在MA200之上（牛市环境）或 (2) 趋势强度足够（偏离 > 2%）
+            trend_up = ma_5 > ma_20
             allow_long = (price_ma200_ratio > 0.05) or (trend_up and price_ma200_ratio > -0.02)
             
-            # ----- 2. 波动率过滤器（低波动时减少风险暴露）-----
+            # 波动率因子
             vol_factor = min(atr[i] / MIN_VOLATILITY, 1.0) if i < len(atr) else 0.5
             
-            # ----- 3. 持仓管理 -----
+            # ----- 持仓管理（初版逻辑）-----
             if holdings > 0:
                 profit = (current_price - entry_price) / entry_price
+                hold_days = i - entry_idx
                 
-                # 跟踪止损：当盈利超过10%后，回撤超过5%则止盈
+                # 跟踪止损
                 if profit > 0.10:
                     trailing_stop = max(0.05, profit * 0.5)
                     if profit - (current_price / entry_price - 1) + 1 < trailing_stop:
@@ -306,29 +304,42 @@ def run_trend_backtest(df, model, scaler_X, scaler_y, initial_capital=100000):
                     entry_price = 0
                     positions.append(0)
                     continue
+                
+                # 【新增】持有超过60天且盈利<5%，减仓一半
+                if hold_days > 60 and profit < 0.05:
+                    # 减仓一半
+                    sell_amount = holdings * current_price * 0.5
+                    capital += sell_amount
+                    holdings = holdings * 0.5
+                    trade_log.append(('减仓', dates[i], current_price, profit))
             
-            # ----- 4. 开仓信号（趋势 + 概率 + 波动）-----
-            if holdings == 0 and allow_long and up_prob > BUY_THRESHOLD and vol_factor > 0.3:
-                # 动态仓位：概率越高仓位越重，且受波动率限制
-                position_ratio = min((up_prob - 0.45) * 2, MAX_POSITION) * vol_factor
-                position_ratio = max(position_ratio, 0.1)  # 最低10%仓位
+            # ----- 信号计数器 -----
+            if up_prob > BUY_THRESHOLD and allow_long and vol_factor > 0.3:
+                signal_counter += 1
+            else:
+                signal_counter = 0
+            
+            # ----- 开仓信号 -----
+            if holdings == 0 and allow_long and up_prob > BUY_THRESHOLD and vol_factor > 0.3 and signal_counter >= MIN_CONSECUTIVE_SIGNALS:
+                # 仓位：概率越高仓位越重
+                position_ratio = min((up_prob - 0.45) * 1.5, MAX_POSITION) * vol_factor
+                position_ratio = max(position_ratio, 0.1)
                 buy_amount = capital * position_ratio
                 holdings = buy_amount / current_price
                 entry_price = current_price
+                entry_idx = i
                 capital = capital - buy_amount
                 trade_log.append(('买入', dates[i], current_price, None, position_ratio))
-                positions.append(position_ratio)  # 记录仓位比例
+                positions.append(position_ratio)
             else:
                 positions.append(1 if holdings > 0 else 0)
     
-    # ----- 诊断输出 -----
     if up_probs:
         print(f"📊 预测概率统计: 均值={np.mean(up_probs):.4f}, 最大值={np.max(up_probs):.4f}, 最小值={np.min(up_probs):.4f}")
     
     if not positions:
         return None
     
-    # 将仓位比例转换为实际持仓
     backtest_df = pd.DataFrame({
         'Date': dates[:len(positions)],
         'Close': close_prices[:len(positions)].astype(float),
@@ -336,7 +347,6 @@ def run_trend_backtest(df, model, scaler_X, scaler_y, initial_capital=100000):
         'Capital': float(initial_capital)
     }, dtype=float)
     
-    # 计算策略收益（考虑动态仓位）
     backtest_df['Position_float'] = backtest_df['Position'].apply(lambda x: x if isinstance(x, float) else (1.0 if x > 0 else 0.0))
     backtest_df['Capital'] = initial_capital * (1 + backtest_df['Close'].pct_change().fillna(0) * backtest_df['Position_float'].shift(1).fillna(0)).cumprod()
     backtest_df['Capital'] = backtest_df['Capital'].astype(float)
