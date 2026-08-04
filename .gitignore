@@ -1,200 +1,85 @@
-# Byte-compiled / optimized / DLL files
+# ====================
+# Python 基础
+# ====================
 __pycache__/
 *.py[cod]
-*$py.class
-
-# C extensions
 *.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
 *.egg
-MANIFEST
+*.egg-info/
+dist/
+build/
+*.whl
 
-# PyInstaller
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-cover/
-
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-.pybuilder/
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# pyenv
-.python-version
-
-# pipenv
-Pipfile.lock
-
-# poetry
-poetry.lock
-
-# pdm
-.pdm.toml
-
-# PEP 582
-__pypackages__/
-
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
-.env
+# ====================
+# 虚拟环境
+# ====================
+venv/
+env/
+ENV/
 .venv
 env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+.env
 
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# IDEs
+# ====================
+# IDE / 编辑器
+# ====================
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+.DS_Store
+Thumbs.db
 
-# =============================================
-# 项目特定忽略文件
-# =============================================
-
-# 模型文件（训练生成的权重和标准化器）
-model.pth
-scaler_X.pkl
-scaler_y.pkl
-
-# 数据缓存（大量历史行情数据）
+# ====================
+# 项目特定：数据缓存
+# ====================
 stock_data_cache/
-*.csv  # 如果所有CSV都是缓存结果，但注意不要忽略源代码中的CSV，建议明确路径
-# 如果你只将CSV保存在 stock_data_cache/ 中，上面的目录忽略已足够
+*.parquet
+*.csv
 
-# 回测结果输出
-batch_results.csv
-whitelist.csv
-whitelist_extended.csv
-pool_backtest_results.csv
-pool_metrics.csv
-expanding_window_results.csv
+# ====================
+# 模型文件（训练输出）
+# ====================
+*.pth
+*.pkl
+*.pt
+model_*.pth
+scaler_*.pkl
 
-# 图表图片
-*.png
-*.jpg
-*.jpeg
-*.pdf
-*.svg
-!pool_capital_curve.png
-
-# 分析输出目录
-analysis_output/
-
-# 临时文件
-*.tmp
-*.temp
+# ====================
+# 日志文件
+# ====================
+logs/
 *.log
 
-# 代理配置文件（如有）
-available_proxies.txt
-fast_proxies.txt
-medium_proxies.txt
+# ====================
+# 回测输出结果（可选，如果你不需要提交 CSV 结果）
+# ====================
+window_*.csv
+expanding_window_summary.csv
+batch_results.csv
+pool_backtest_results.csv
+pool_metrics.csv
+*.png
+*.jpg
+*.csv
 
-# 压缩文件（如有手动下载的数据）
-*.zip
-*.tar.gz
-*.tgz
-*.rar
+# ====================
+# 临时文件
+# ====================
+tmp/
+temp/
+*.tmp
+*.bak
 
-# 操作系统生成文件
-Thumbs.db
+# ====================
+# 操作系统
+# ====================
 .DS_Store
+Thumbs.db
+desktop.ini
 
+test.py
 66ip.py
 ai.py
-test.py
