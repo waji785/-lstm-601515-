@@ -113,14 +113,14 @@ def run_window_backtest(window_idx, train_end_date, test_start, test_end,
 
     logger.info(f"窗口 {window_idx+1} 训练完成，模型保存至 {model_path}")
 
-    # 2. 重新加载模型（确保与 test.py 一致）
+    # 2. 重新加载模型
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     try:
         model_reloaded = torch.load(model_path, map_location=device, weights_only=False)
         model_reloaded.eval()
         if hasattr(model_reloaded.lstm, 'flatten_parameters'):
             model_reloaded.lstm.flatten_parameters()
-        logger.info("✅ 模型 state_dict 加载成功")
+        logger.info("✅ 模型加载成功")
         model = model_reloaded
     except Exception as e:
         logger.error(f"加载模型失败: {e}")
@@ -131,7 +131,7 @@ def run_window_backtest(window_idx, train_end_date, test_start, test_end,
     # 3. 准备边跑边写的 CSV 文件
     csv_file = f"window_{window_idx+1}_results.csv"
     if os.path.exists(csv_file):
-        os.remove(csv_file)   # 确保全新写入
+        os.remove(csv_file)
     header_written = False
     results = []  # 用于汇总统计
 
@@ -149,8 +149,7 @@ def run_window_backtest(window_idx, train_end_date, test_start, test_end,
         for future in tqdm(as_completed(future_map), total=len(future_map), desc=f"窗口{window_idx+1}回测"):
             res = future.result()
             if res:
-                results.append(res)  # 收集用于汇总
-                # 立即写入 CSV（单行追加）
+                results.append(res)
                 df_row = pd.DataFrame([res])
                 if not header_written or not os.path.exists(csv_file):
                     df_row.to_csv(csv_file, index=False, mode='w', encoding='utf-8-sig')
@@ -167,10 +166,34 @@ def run_window_backtest(window_idx, train_end_date, test_start, test_end,
     # 5. 如果没有结果，记录并返回
     if not results:
         logger.warning(f"窗口 {window_idx+1} 无有效回测结果")
-        # 保存一个空汇总行（可选）
+        # 仍然写入一个空汇总行（但跳过本次统计）
+        summary_row = {
+            'window': window_idx + 1,
+            'train_end': train_end_date,
+            'test_start': test_start,
+            'test_end': test_end,
+            'avg_return': np.nan,
+            'win_ratio': np.nan,
+            'avg_sharpe': np.nan,
+            'avg_max_drawdown': np.nan,
+            'num_stocks': 0
+        }
+        # 写入汇总文件（追加空行）
+        summary_file = "expanding_window_summary.csv"
+        new_row_df = pd.DataFrame([summary_row])
+        if os.path.exists(summary_file):
+            df_summary = pd.read_csv(summary_file)
+            # 检查是否已存在相同窗口，若存在则删除旧行
+            mask = (df_summary['window'] == window_idx + 1) & (df_summary['train_end'] == train_end_date)
+            if mask.any():
+                df_summary = df_summary[~mask]
+            df_summary = pd.concat([df_summary, new_row_df], ignore_index=True)
+        else:
+            df_summary = new_row_df
+        df_summary.to_csv(summary_file, index=False, encoding='utf-8-sig')
         return []
 
-    # 6. 计算汇总统计并保存汇总文件
+    # 6. 计算汇总统计
     df_res = pd.DataFrame(results)
     avg_ret = df_res['total_return'].mean()
     win_ratio = (df_res['total_return'] > 0).mean()
@@ -189,25 +212,23 @@ def run_window_backtest(window_idx, train_end_date, test_start, test_end,
         'num_stocks': len(df_res)
     }
 
-    # 读取已有的汇总文件（如果存在）并追加新行
+    # 7. 写入汇总文件（安全追加，避免类型错误）
     summary_file = "expanding_window_summary.csv"
+    new_row_df = pd.DataFrame([summary_row])
     if os.path.exists(summary_file):
         df_summary = pd.read_csv(summary_file)
-        # 检查是否已存在相同窗口（防止重复运行追加）
-        if not ((df_summary['window'] == window_idx + 1) & 
-                (df_summary['train_end'] == train_end_date)).any():
-            df_summary = pd.concat([df_summary, pd.DataFrame([summary_row])], ignore_index=True)
-        else:
-            # 如果存在，更新该行
-            df_summary.loc[(df_summary['window'] == window_idx + 1) & 
-                           (df_summary['train_end'] == train_end_date)] = summary_row
+        # 检查是否已存在相同窗口，若存在则删除旧行
+        mask = (df_summary['window'] == window_idx + 1) & (df_summary['train_end'] == train_end_date)
+        if mask.any():
+            df_summary = df_summary[~mask]
+        df_summary = pd.concat([df_summary, new_row_df], ignore_index=True)
     else:
-        df_summary = pd.DataFrame([summary_row])
+        df_summary = new_row_df
 
     df_summary.to_csv(summary_file, index=False, encoding='utf-8-sig')
     logger.info(f"窗口 {window_idx+1} 汇总已保存至 {summary_file}")
 
-    # 打印本窗口汇总（便于观察）
+    # 打印本窗口汇总
     print(f"\n窗口 {window_idx+1} 汇总:")
     print(f"  平均收益率: {avg_ret*100:.2f}%")
     print(f"  胜率: {win_ratio*100:.2f}%")
@@ -215,7 +236,7 @@ def run_window_backtest(window_idx, train_end_date, test_start, test_end,
     print(f"  平均最大回撤: {avg_dd*100:.2f}%")
     print(f"  有效股票数: {len(df_res)}")
 
-    return results   # 返回结果列表（供后续汇总，但此处已保存）
+    return results
 def main():
     set_seed(SEED)
 
