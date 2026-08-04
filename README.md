@@ -18,6 +18,8 @@
 | **可视化** | Matplotlib、Seaborn |
 | **模型持久化** | joblib |
 
+markdown
+
 ## 📂 项目结构
 ├── config/ # 全局配置
 │ └── settings.py # 所有参数（阈值、路径、特征列表）
@@ -41,6 +43,7 @@
 ├── .gitignore
 └── README.md
 
+text
 
 📊 运行流程
 1. 首次运行：下载数据并训练模型
