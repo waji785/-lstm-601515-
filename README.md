@@ -48,8 +48,11 @@
 └── README.md
 ```
 
+
+## 📊 运行流程
+
 ```text
-📊 运行流程
+
 1. 首次运行：下载数据并训练模型
 bash
 pip install -r requirements.txt
@@ -70,8 +73,10 @@ python scripts/pool_backtest_analysis.py
 生成资金曲线图和绩效指标 CSV。
 ```
 
+
+## 🔍 结果文件说明
+
 ```text
-🔍 结果文件说明
 window_1_results.csv ~ window_N_results.csv：每个窗口的逐股票回测结果（包含收益率、夏普、回撤、交易次数等）。
 expanding_window_summary.csv：各窗口的汇总统计（平均收益、胜率、夏普、回撤、有效股票数）。
 model_final.pth：最终生产模型（包含全部历史数据）。
@@ -80,8 +85,9 @@ pool_backtest_results.csv：组合回测的股票贡献明细。
 pool_metrics.csv：组合的绩效指标。
 ```
 
+## ⚙️ 关键参数调优建议
+
 ```text
-⚙️ 关键参数调优建议
 参数	含义	调优方向
 BUY_THRESHOLD	买入阈值（概率）	提高可减少假信号，但可能错过机会
 STOP_LOSS	止损比例	收紧可控制单笔亏损，但可能过早离场
@@ -92,8 +98,9 @@ HIDDEN_SIZE	LSTM 隐藏层维度	64 或 128，越大模型容量越大
 NUM_LAYERS	LSTM 层数	2~3 层足够，过深易过拟合
 ```
 
+## 📖 常见问题
+
 ```text
-📖 常见问题
 1. 数据下载失败或超时？
 检查网络，或改用 akshare 作为主数据源（在 core/data_loader.py 中调整优先级）。
 若频繁超时，可降低 max_workers 或增加 timeout。
