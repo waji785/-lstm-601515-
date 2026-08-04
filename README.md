@@ -1,61 +1,12 @@
-**A股量化回测系统 — 基于LSTM的多任务学习策略**
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-orange)](https://pytorch.org/)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
-## 📖 项目简介
-本项目构建了一个**完整的A股量化交易系统**，核心基于 **LSTM 神经网络** 和 **趋势跟踪策略**。系统实现了从**全市数据训练**到**精选股票池组合**的完整链路，并在样本外回测中取得了显著的超额收益。
+📈 A股LSTM量化交易系统
+基于 LSTM 神经网络 的 A 股市场量化策略回测与交易系统，支持全市场选股、多窗口交叉验证、组合回测与绩效分析。
 
----
-
-## 🏆 核心成果
-
-### 📊 组合回测结果（30只白名单股票，等权重）
-
-| 指标 | 数值 |
-| :--- | :--- |
-| **组合总收益率** | **+48.70%** |
-| **平均单只收益率** | +144.14% |
-| **正收益股票数** | **27/30（90%）** |
-| **年化收益率** | 20.42% |
-| **最大回撤** | **3.45%** |
-| **夏普比率（年化）** | **1.899** |
-| **超额收益（vs 沪深300）** | **显著跑赢** |
-| **回测区间** | 约 538 个交易日（~2.14年） |
-
-### 📋 白名单前10名（扩展窗口验证）
-
-| 排名 | 代码 | 名称 | 收益率 | 夏普比率 | 最大回撤 |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| 1 | 001259 | 利仁科技 | **275.4%** | 1.48 | 10.9% |
-| 2 | 002552 | 宝鼎科技 | **261.5%** | 1.80 | 30.5% |
-| 3 | 002202 | 金风科技 | **215.3%** | 2.18 | 21.7% |
-| 4 | 600367 | 红星发展 | **186.2%** | 1.50 | 30.8% |
-| 5 | 000657 | 中钨高新 | **163.7%** | 2.39 | 18.8% |
-| 6 | 000586 | 汇源通信 | **142.7%** | 1.48 | 32.8% |
-| 7 | 688700 | 东威科技 | **138.9%** | 1.47 | 36.5% |
-| 8 | 605599 | 菜百股份 | **134.0%** | 2.58 | 7.8% |
-| 9 | 002277 | 友阿股份 | **130.9%** | 1.78 | 13.9% |
-| 10 | 688401 | 路维光电 | **123.5%** | 1.61 | 25.9% |
-
-### 📈 资金曲线 vs 沪深300
-
-组合策略在回测区间内持续跑赢沪深300，超额收益显著。
-
-![组合资金曲线](pool_capital_curve.png)
-
----
-
-## 🎯 核心特性
-
-- ✅ **全市数据训练**：用全市场 5000+ 只股票数据训练统一 LSTM 模型，泛化能力强
-- ✅ **多任务学习架构**：同时预测次日收盘价（回归）和涨跌方向（分类）
-- ✅ **趋势跟踪策略**：基于 MA200 趋势过滤、动态仓位管理、止盈止损
-- ✅ **严格时间验证**：扩展窗口测试（前70%训练，后30%回测），杜绝未来信息泄露
-- ✅ **白名单筛选**：通过样本外验证，从全市场筛选出 30 只高质量股票
-- ✅ **组合策略**：等权重持仓，分散风险，平滑资金曲线
-- ✅ **GPU 加速**：支持 NVIDIA CUDA 训练，大幅提升效率
-
----
+🚀 核心特性
+全流程自动化：数据下载 → 特征工程 → 模型训练 → 回测 → 绩效评估，一键运行。
+时间分割交叉验证：扩展窗口（Expanding Window）验证策略在不同年份的稳健性，避免过拟合。
+高透明度：回测结果实时写入 CSV，支持逐只股票回溯，方便分析。
+实战化支持：交易成本（佣金、印花税、滑点）、仓位管理、止盈止损机制。
+模型集成：支持生成最终生产模型，用于实盘（或模拟盘）预测。
 
 ## 🛠️ 技术栈
 
@@ -67,85 +18,95 @@
 | **可视化** | Matplotlib、Seaborn |
 | **模型持久化** | joblib |
 
-### 模型架构
-
-
----
-
 ## 📂 项目结构
 
-```text
 .
-├── stock_full2.py              # 核心引擎（数据、模型、回测）
-├── batch_backtest.py           # 全市模型批量回测 + 白名单生成
-├── expand_whitelist.py         # 白名单扩展（时间分割验证）
-├── pool_backtest_analysis.py   # 组合回测 + 绩效分析
-├── requirements.txt            # 依赖清单
-├── README.md                   # 项目说明
-│
-├── stock_data_cache/           # 数据缓存目录（自动生成）
-├── model.pth                   # 全市模型权重
-├── scaler_X.pkl                # 特征标准化器
-├── scaler_y.pkl                # 标签标准化器
-├── whitelist.csv               # 原始白名单
-├── whitelist_extended.csv      # 扩展白名单（30只精选）
-├── pool_backtest_results.csv   # 组合回测结果
-├── pool_capital_curve.png      # 组合资金曲线图
-└── return_distribution.png     # 收益率分布图
+├── config/                  # 全局配置
+│   ├── settings.py          # 所有参数（阈值、路径、特征列表）
+│   └── __init__.py
+├── core/                    # 核心功能模块
+│   ├── data_loader.py       # 数据下载、缓存、增量更新
+│   ├── features.py          # 特征构造（技术指标、目标变量）
+│   ├── model.py             # LSTM 模型定义
+│   ├── trainer.py           # 模型训练（早停、验证集划分）
+│   ├── backtest_engine.py   # 回测引擎（交易成本、信号生成）
+│   └── metrics.py           # 绩效指标（夏普、回撤等）
+├── scripts/                 # 可执行脚本
+│   ├── batch_backtest.py    # 扩展窗口交叉验证 + 最终模型训练
+│   ├── train_final_model.py # 单独训练最终模型
+│   └── pool_backtest_analysis.py # 组合回测与绩效分析
+├── utils/                   # 工具函数
+│   ├── common.py            # 随机种子、序列生成
+│   └── logger.py            # 日志配置
+├── logs/                    # 日志文件
+├── stock_data_cache/        # 股票数据缓存（Parquet 格式）
+├── requirements.txt         # 依赖列表
+├── .gitignore
+└── README.md
 
+📊 运行流程
+1. 首次运行：下载数据并训练模型
+bash
+pip install -r requirements.txt
+python scripts/batch_backtest.py
+自动下载 A 股列表，过滤北交所和 ST 股票。
+下载每只股票的历史数据（优先缓存，支持增量更新）。
+执行 扩展窗口交叉验证（默认 3 个窗口，可调整 NUM_WINDOWS）。
+最后训练 最终模型（使用全部历史数据）。
 
+2. 仅训练最终模型（跳过窗口验证）
+bash
+python scripts/train_final_model.py --stocks 6000 --end-date 2026-08-04
+3. 组合回测（对白名单股票进行等权重组合）
+bash
+python scripts/pool_backtest_analysis.py
+加载 whitelist_extended.csv 中的股票。
+使用最终模型进行组合回测，计算组合收益、夏普、最大回撤。
+生成资金曲线图和绩效指标 CSV。
 
-🚀 快速开始
-1. 安装依赖
-pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+🔍 结果文件说明
+window_1_results.csv ~ window_N_results.csv：每个窗口的逐股票回测结果（包含收益率、夏普、回撤、交易次数等）。
+expanding_window_summary.csv：各窗口的汇总统计（平均收益、胜率、夏普、回撤、有效股票数）。
+model_final.pth：最终生产模型（包含全部历史数据）。
+scaler_X_final.pkl、scaler_Y_final.pkl：标准化器（用于新数据预处理）。
+pool_backtest_results.csv：组合回测的股票贡献明细。
+pool_metrics.csv：组合的绩效指标。
 
-2. 数据准备
-# 首次运行会自动下载数据并缓存到 stock_data_cache/
+⚙️ 关键参数调优建议
+参数	含义	调优方向
+BUY_THRESHOLD	买入阈值（概率）	提高可减少假信号，但可能错过机会
+STOP_LOSS	止损比例	收紧可控制单笔亏损，但可能过早离场
+TAKE_PROFIT	止盈比例	降低可更快锁定利润，提高胜率
+MAX_POSITION	单只股票最大仓位	控制集中度，降低组合风险
+SEQ_LEN	序列长度（天数）	影响模型时间窗口，可尝试 10~30
+HIDDEN_SIZE	LSTM 隐藏层维度	64 或 128，越大模型容量越大
+NUM_LAYERS	LSTM 层数	2~3 层足够，过深易过拟合
 
-3. 全市模型训练 + 白名单生成
-python batch_backtest.py
-程序会：
-加载全市场股票数据，训练统一 LSTM 模型
-用该模型回测所有股票，生成 whitelist.csv
+📖 常见问题
+1. 数据下载失败或超时？
+检查网络，或改用 akshare 作为主数据源（在 core/data_loader.py 中调整优先级）。
+若频繁超时，可降低 max_workers 或增加 timeout。
 
-4. 白名单扩展（时间分割验证）
-python expand_whitelist.py
-对候选股票进行前70%训练，后30%回测的时间分割验证，生成 whitelist_extended.csv（精选30只）。
+2. 模型训练太慢？
+减少 TRAIN_STOCKS（训练股票数）。
+启用混合精度训练（在 trainer.py 中启用 autocast）。
+使用 GPU（CUDA）加速。
 
-5. 组合回测与绩效分析
-python pool_backtest_analysis.py
-输出：
-组合总收益率、正收益股票数、夏普比率
-资金曲线图（vs 沪深300）
-收益率分布图
+3. zip() argument 2 is longer than argument 1 错误？
+确保模型定义（core/model.py）与保存的权重一致（HIDDEN_SIZE、NUM_LAYERS）。
+在 run_window_backtest 中已采用保存整个模型对象的方式，该错误不应再出现。
 
-🔧 策略参数调优
-在 stock_full2.py 中可调整的核心参数：
-python
-BUY_THRESHOLD = 0.45      # 上涨概率 > 0.45 买入
-SELL_THRESHOLD = 0.43     # 上涨概率 < 0.43 卖出
-STOP_LOSS = -0.08         # 亏损 8% 止损
-TAKE_PROFIT = 0.20        # 盈利 20% 止盈
-MAX_POSITION = 0.6        # 单只股票最大仓位 60%
-白名单筛选条件（batch_backtest.py）：
-python
-WHITELIST_MIN_RETURN = 0.30    # 最低收益率 30%
-WHITELIST_MIN_TRADES = 3       # 最少交易次数 3
-WHITELIST_MAX_DRAWDOWN = 0.52  # 最大回撤 52%
-回撤控制参数（pool_backtest_analysis.py）：
-drawdown_threshold = 0.035   # 回撤 4% 触发降仓
-recovery_ratio = 0.35        # 回撤恢复到 1.6% 时恢复满仓
+4. 如何查看单只股票的回测详情？
+运行 test.py（需自行创建），加载 model_final.pth，对指定股票进行回测并输出交易明细。
 
-
-📊 结果可视化
-运行 pool_backtest_analysis.py 后自动生成：
-组合资金曲线图 (pool_capital_curve.png)：策略 vs 沪深300
-收益率分布图 (return_distribution.png)：30只白名单股票的收益分布
-绩效指标表 (pool_metrics.csv)：总收益、年化收益、夏普比率、最大回撤
-
-📧 联系与交流
-如有问题或建议，欢迎通过 GitHub Issues 交流。
+5. 如何扩展新特征？
+在 config/settings.py 的 FEATURE_COLS 中添加新列名
+在 core/features.py 的 construct_features 函数中实现计算逻辑。
+运行 reconstruct_all_features()（在 data_loader.py 中）重建缓存特征，无需重新下载数据。
 
 
 **⚠️ 免责声明：本项目仅供量化研究与学习使用，不构成任何投资建议。实盘交易需谨慎，风险自负。**
 
+## License
+
+This project is licensed under the Apache License, Version 2.0 - see the [LICENSE](LICENSE) file for details.
