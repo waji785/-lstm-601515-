@@ -19,28 +19,25 @@
 | **模型持久化** | joblib |
 
 ## 📂 项目结构
-
-.
-├── config/                  # 全局配置
-│   ├── settings.py          # 所有参数（阈值、路径、特征列表）
-│   └── __init__.py
-├── core/                    # 核心功能模块
-│   ├── data_loader.py       # 数据下载、缓存、增量更新
-│   ├── features.py          # 特征构造（技术指标、目标变量）
-│   ├── model.py             # LSTM 模型定义
-│   ├── trainer.py           # 模型训练（早停、验证集划分）
-│   ├── backtest_engine.py   # 回测引擎（交易成本、信号生成）
-│   └── metrics.py           # 绩效指标（夏普、回撤等）
-├── scripts/                 # 可执行脚本
-│   ├── batch_backtest.py    # 扩展窗口交叉验证 + 最终模型训练
-│   ├── train_final_model.py # 单独训练最终模型
-│   └── pool_backtest_analysis.py # 组合回测与绩效分析
-├── utils/                   # 工具函数
-│   ├── common.py            # 随机种子、序列生成
-│   └── logger.py            # 日志配置
-├── logs/                    # 日志文件
-├── stock_data_cache/        # 股票数据缓存（Parquet 格式）
-├── requirements.txt         # 依赖列表
+├── config/ # 全局配置
+│ └── settings.py # 所有参数（阈值、路径、特征列表）
+├── core/ # 核心功能模块
+│ ├── data_loader.py # 数据下载、缓存、增量更新
+│ ├── features.py # 特征构造（技术指标、目标变量）
+│ ├── model.py # LSTM 模型定义
+│ ├── trainer.py # 模型训练（早停、验证集划分）
+│ ├── backtest_engine.py # 回测引擎（交易成本、信号生成）
+│ └── metrics.py # 绩效指标（夏普、回撤等）
+├── scripts/ # 可执行脚本
+│ ├── batch_backtest.py # 扩展窗口交叉验证 + 最终模型训练
+│ ├── train_final_model.py # 单独训练最终模型
+│ └── pool_backtest_analysis.py # 组合回测与绩效分析
+├── utils/ # 工具函数
+│ ├── common.py # 随机种子、序列生成
+│ └── logger.py # 日志配置
+├── logs/ # 日志文件
+├── stock_data_cache/ # 股票数据缓存（Parquet 格式）
+├── requirements.txt # 依赖列表
 ├── .gitignore
 └── README.md
 
