@@ -131,7 +131,7 @@ HIDDEN_SIZE	LSTM 隐藏层维度	64/128，越大模型容量越大
 ```
 ## 📈 组合资金曲线
 
-![组合资金曲线（等权重）](pool_capital_curve.png)
+![组合资金曲线（等权重）](pool_curve.png)
 
 ## 📖 常见问题
 
