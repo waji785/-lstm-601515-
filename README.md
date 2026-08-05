@@ -129,6 +129,9 @@ HIDDEN_SIZE	LSTM 隐藏层维度	64/128，越大模型容量越大
 688498	源杰科技	27.4%	1.902	7.1%
 300502	新易盛	27.3%	2.100	3.1%
 ```
+## 📈 组合资金曲线
+
+![组合资金曲线（等权重）](pool_capital_curve.png)
 
 ## 📖 常见问题
 
@@ -158,7 +161,7 @@ HIDDEN_SIZE	LSTM 隐藏层维度	64/128，越大模型容量越大
 降低 WHITELIST_MIN_RETURN 阈值（如 0.05）。
 延长回测区间（如 BACKTEST_START = "2025-01-01"）。
 
-5. PyTorch 2.6 加载模型报错？
+7. PyTorch 2.6 加载模型报错？
 在 torch.load() 中添加 weights_only=False：
 python
 model = torch.load(model_path, map_location=device, weights_only=False)
