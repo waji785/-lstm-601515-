@@ -4,7 +4,7 @@ import datetime
 
 # ------------------- 时间范围 -------------------
 TRAIN_END_DATE = "2025-12-31"
-BACKTEST_START_DATE = "2026-01-01"
+BACKTEST_START_DATE = "2025-01-01"
 TODAY = datetime.datetime.now().strftime("%Y-%m-%d")   # 必须定义
 
 # ------------------- 路径 -------------------

@@ -12,6 +12,9 @@ import matplotlib
 matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei']
 matplotlib.rcParams['axes.unicode_minus'] = False
 
+import torch
+from core.model import DualLSTM  # 确保导入你的模型类
+
 from config.settings import *
 from core.data_loader import load_from_cache
 from core.model import DualLSTM
@@ -21,21 +24,21 @@ from core.features import construct_features, clean_data
 from utils.common import set_seed
 from utils.logger import setup_logger
 
+torch.serialization.add_safe_globals([DualLSTM])
 logger = setup_logger(__name__)
 
-def load_unified_model(model_path=None, scaler_x_path=None, scaler_y_path=None):
-    """加载全市模型（支持指定路径）"""
-    # 如果未指定路径，使用最终模型
-    if model_path is None:
-        model_path = "model_final.pth"
-    if scaler_x_path is None:
-        scaler_x_path = "scaler_X_final.pkl"
-    if scaler_y_path is None:
-        scaler_y_path = "scaler_Y_final.pkl"
-    
+def load_unified_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = DualLSTM(input_size=len(FEATURE_COLS), hidden_size=64, num_layers=2).to(device)
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    model_path = "model_final.pth"
+    scaler_x_path = "scaler_X_final.pkl"
+    scaler_y_path = "scaler_Y_final.pkl"
+    
+    # 直接加载整个模型对象（不是 state_dict）
+    model = torch.load(model_path, map_location=device, weights_only=False)
+    model.eval()
+    if hasattr(model.lstm, 'flatten_parameters'):
+        model.lstm.flatten_parameters()
+    
     scaler_X = joblib.load(scaler_x_path)
     scaler_y = joblib.load(scaler_y_path)
     return model, scaler_X, scaler_y
@@ -62,6 +65,7 @@ def run_pool_backtest(whitelist_file=WHITELIST_EXTENDED_FILE, max_stocks=30):
         logger.info(f"回测 {code} {name} ({idx+1}/{len(df_white)})")
         df = load_from_cache(code)
         if df is None or len(df) < 200:
+            logger.warning(f"{code} 数据不足（天数 {len(df) if df is not None else 0}）")
             continue
         df['Date'] = pd.to_datetime(df['Date'])
         df = df[df['Date'] >= BACKTEST_START_DATE].copy()
@@ -73,6 +77,7 @@ def run_pool_backtest(whitelist_file=WHITELIST_EXTENDED_FILE, max_stocks=30):
         backtest_df = run_backtest(df, model, scaler_X, scaler_y,
                                    start_date=BACKTEST_START_DATE)
         if backtest_df is None:
+            logger.warning(f"{code} 回测返回 None")
             continue
         capital_curves.append(backtest_df['Capital'].values)
         date_arrays.append(backtest_df['Date'].values)
